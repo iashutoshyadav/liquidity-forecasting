@@ -82,7 +82,7 @@ def candidate_lines(ds: Dataset, settings, cal, cutoff: pd.Timestamp) -> pd.Data
     roll = np.where(known["source_type"] == "RECEIVABLE", fc["overdue_receivable_roll_days"], fc["overdue_payable_roll_days"])
     redated = pd.to_datetime(cal.roll_forward(ts + pd.to_timedelta(roll, unit="D")))
     base = pd.Series(np.where(overdue, redated, base), index=known.index)
-    known["base_date"] = pd.to_datetime(base)
+    known["base_date"] = pd.to_datetime(base).astype("datetime64[ns]")
     window_end = ts + pd.Timedelta(days=int(fc["horizon_days"]) - 1)
     lines = known[known["base_date"] <= window_end].copy()
 

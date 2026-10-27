@@ -5,7 +5,17 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
-from liqfc.core.schema import INPUT_TABLES, SCHEMA
+from liqfc.core.schema import INPUT_TABLES, SCHEMA, Table
+
+DATETIME_UNIT = "datetime64[ns]"
+
+
+def normalize_datetimes(df: pd.DataFrame, spec: Table) -> pd.DataFrame:
+    """Give every date/ts column one resolution (pandas 3 infers s/us/ns per column)."""
+    for f in spec.fields:
+        if f.dtype in ("date", "ts") and f.name in df.columns and df[f.name].dtype != DATETIME_UNIT:
+            df[f.name] = pd.to_datetime(df[f.name]).astype(DATETIME_UNIT)
+    return df
 
 
 @dataclass
@@ -40,5 +50,6 @@ class Dataset:
             missing = [c for c in spec.columns if c not in df.columns]
             if missing:
                 raise ValueError(f"{name} missing columns {missing}")
-            self.tables[name] = df[spec.columns].sort_values(list(spec.pk), kind="mergesort").reset_index(drop=True)
+            out = df[spec.columns].sort_values(list(spec.pk), kind="mergesort").reset_index(drop=True)
+            self.tables[name] = normalize_datetimes(out, spec)
         return self

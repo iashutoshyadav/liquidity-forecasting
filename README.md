@@ -80,7 +80,8 @@ system administrators (configuration, scenarios, data generation).
 
 ## 3. Quick start
 
-**Requirements:** Python 3.11+.
+**Requirements:** Python 3.11+. Tested with pandas 2.3 and 3.1 and NumPy 1.26 and 2.4; both combinations
+produce byte-identical outputs.
 
 ```bash
 git clone https://github.com/iashutoshyadav/liquidity-forecasting.git
@@ -397,6 +398,7 @@ checksums, raw bytes and validation summaries. Verified results:
 | Full, hybrid | 91 / 91 files identical |
 | Starter, hybrid | 92 / 92 files identical |
 | Full, synthetic | 91 / 91 files identical |
+| Fresh clone: pandas 2.3.3 + NumPy 1.26.4 vs pandas 3.1.0 + NumPy 2.4.6 (starter) | 92 / 92 files identical |
 
 How determinism is achieved:
 - one named random stream per module, so changing one generator doesn't shift the others;
@@ -492,7 +494,7 @@ liquidity-forecasting/
 - About 80% of ledger rows are small sundry payments, there to reach the exact 100,000-row target. They have no forecast items, so UNFORECAST is the largest variance driver. A run-rate model for small flows would reduce it.
 - Breaches appear only at entity level under STRESS, because calibrated opening balances leave the group well above its policy minimum.
 - Detectors are rules written for the five specified anomaly types. Perfect scores show they work on those types, not that they generalise to unseen kinds of bad data.
-- Byte-identical reproducibility was verified in one environment (Python 3.11.9, pandas 2.3.3, NumPy 1.26.4, recorded in the manifest). Other library versions may change random draws.
+- Byte-identical output was verified on Python 3.11 with pandas 2.3/NumPy 1.26 and pandas 3.1/NumPy 2.4 (versions are recorded in each manifest). Library versions outside the tested range in `requirements.txt` could change random draws.
 - The Kaggle FX source doesn't name its upstream provider, so treat the rates as realistic market levels, not official fixings.
 - No dashboard; the problem statement made it optional. The outputs are structured to feed one.
 

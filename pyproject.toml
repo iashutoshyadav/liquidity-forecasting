@@ -8,9 +8,9 @@ version = "1.0.0"
 description = "Liquidity forecasting and risk monitoring: deterministic synthetic treasury data, daily cash positions, scenario forecasts, anomaly detection and evaluation."
 requires-python = ">=3.11"
 dependencies = [
-    "pandas>=2.0",
-    "numpy>=1.24",
-    "PyYAML>=6.0",
+    "pandas>=2.2,<4",
+    "numpy>=1.26,<3",
+    "PyYAML>=6.0,<7",
 ]
 
 [project.optional-dependencies]

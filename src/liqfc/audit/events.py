@@ -47,14 +47,22 @@ class RunLifecycle:
         return df
 
 
+def _json_value(v):
+    """Missing values (None, NaN, NaT, pd.NA) become JSON null; NumPy scalars become Python scalars."""
+    if v is None or (not isinstance(v, (str, bytes)) and pd.api.types.is_scalar(v) and pd.isna(v)):
+        return None
+    return v.item() if hasattr(v, "item") and not isinstance(v, (str, bytes)) else v
+
+
 class AuditTrail:
     def __init__(self, id_year: int):
         self.id_year = id_year
         self.log = AppendOnlyLog(["event_ts", "actor_role", "action", "object_type", "object_id", "details"])
 
     def record(self, ts, actor: str, action: str, object_type: str, object_id: str, **details) -> None:
+        clean = {k: _json_value(v) for k, v in details.items()}
         self.log.append(event_ts=ts, actor_role=actor, action=action, object_type=object_type, object_id=object_id,
-                        details=json.dumps(details, sort_keys=True, default=str))
+                        details=json.dumps(clean, sort_keys=True, default=str, allow_nan=False))
 
     def frame(self) -> pd.DataFrame:
         df = self.log.frame().sort_values(["event_ts", "action", "object_id"], kind="mergesort").reset_index(drop=True)

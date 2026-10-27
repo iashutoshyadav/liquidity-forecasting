@@ -26,6 +26,10 @@ def test_no_false_positives_on_clean_baseline(base_result):
     assert len(base_result.detections) == 0
 
 
+def _as_text(df: pd.DataFrame) -> pd.DataFrame:
+    return df.astype(object).where(df.notna(), "<NA>").astype(str)
+
+
 def test_injectors_only_touch_targets(baseline, injected):
     inj, gt = injected
     targets = set(gt["affected_record_id"])
@@ -36,7 +40,7 @@ def test_injectors_only_touch_targets(baseline, injected):
         removed = set(a.index) - set(b.index)
         added = set(b.index) - set(a.index)
         common = a.index.intersection(b.index)
-        changed = common[~(a.loc[common].fillna("<NA>").astype(str) == b.loc[common].fillna("<NA>").astype(str)).all(axis=1)]
+        changed = common[~(_as_text(a.loc[common]) == _as_text(b.loc[common])).all(axis=1)]
         allowed_added = targets | set(gt.loc[gt["issue_type"] == "DUPLICATE_CASH_FLOW", "injected_value"])
         if name == "forecast_source_link":
             assert set(b.loc[list(added), "cf_id"]) <= allowed_added

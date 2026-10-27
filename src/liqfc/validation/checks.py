@@ -60,7 +60,7 @@ def structural_checks(tables: dict[str, pd.DataFrame]) -> list[CheckResult]:
         req, enum, fmt, unq = [], [], [], []
         for f in spec.fields:
             col = df[f.name]
-            null = col.isna() | (col.astype(str) == "")
+            null = col.isna() | col.map(lambda v: isinstance(v, str) and v == "").astype(bool)
             if f.required:
                 req += [(r, "null", "value", f"{f.name} required") for r in rid[null]]
             present = ~null
@@ -69,7 +69,7 @@ def structural_checks(tables: dict[str, pd.DataFrame]) -> list[CheckResult]:
                 enum += [(r, v, "|".join(f.enum), f"{f.name} not allowed") for r, v in zip(rid[bad], col[bad])]
             if f.pattern:
                 rx = re.compile(f.pattern)
-                bad = present & ~col.astype(str).map(lambda v: bool(rx.match(v)))
+                bad = present & ~col.map(lambda v: isinstance(v, str) and bool(rx.match(v))).astype(bool)
                 fmt += [(r, v, f.pattern, f"{f.name} format") for r, v in zip(rid[bad], col[bad])]
             if f.unique:
                 bad = present & col.duplicated(keep=False)

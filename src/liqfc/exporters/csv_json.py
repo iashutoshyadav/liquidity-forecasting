@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from liqfc.core.dataset import normalize_datetimes
 from liqfc.core.schema import SCHEMA, Table
 
 
@@ -43,7 +44,8 @@ def _json_val(dtype: str):
 
 def canonical_frame(df: pd.DataFrame, table: str | Table) -> pd.DataFrame:
     spec = SCHEMA[table] if isinstance(table, str) else table
-    return df[spec.columns].sort_values(list(spec.pk), kind="mergesort").reset_index(drop=True)
+    out = df[spec.columns].sort_values(list(spec.pk), kind="mergesort").reset_index(drop=True)
+    return normalize_datetimes(out, spec)
 
 
 def to_csv_text(df: pd.DataFrame, table: str | Table) -> str:

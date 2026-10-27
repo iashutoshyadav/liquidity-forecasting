@@ -117,7 +117,7 @@ def _sundry(ctx: GenContext, accounts: pd.DataFrame, n: int, active_on) -> pd.Da
     cfg = s.gen["ledger"]
     rng = ctx.rng("ledger:sundry")
     w = accounts["account_type"].map(cfg["sundry_account_weights"]).to_numpy(float)
-    w *= np.sqrt([ctx.entity_size[e] for e in accounts["entity_id"]])
+    w = w * np.sqrt([ctx.entity_size[e] for e in accounts["entity_id"]])
     pick = rng.choice(len(accounts), size=n, p=w / w.sum())
     bdays = pd.to_datetime(ctx.cal.business_days(s.start, s.end))
     day = bdays[rng.integers(0, len(bdays), n)]
