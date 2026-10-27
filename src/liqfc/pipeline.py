@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pandas as pd
@@ -20,7 +20,8 @@ from liqfc.validation.report import run_validation
 from liqfc.core.calendar import BusinessCalendar
 from liqfc.core.dataset import Dataset
 from liqfc.engine.anomaly_detection import detect_all, flagged_cf_ids
-from liqfc.engine.balances import consolidated_positions, daily_cash_positions
+from liqfc.engine.approval import material_breaks, run_holds
+from liqfc.engine.balances import consolidated_positions, daily_cash_positions, split_ledger_by_currency
 from liqfc.engine.forecast_run import execute_all
 from liqfc.engine.fx_conversion import FxLookup
 from liqfc.engine.liquidity_alerts import build_alerts
@@ -29,10 +30,10 @@ from liqfc.engine.variance import attribute_run, compare_run
 from liqfc.exporters.csv_json import canonical_frame, dataset_hash
 from liqfc.generators.accounts import generate_accounts
 from liqfc.generators.actual_cash_flows import build_actuals
-from liqfc.generators.balance_statements import build_statements
+from liqfc.generators.balance_statements import build_bank_lines, build_statements
 from liqfc.generators.context import GenContext
 from liqfc.generators.entities import generate_entities
-from liqfc.generators.forecast_items import assign_cf_ids, finalize_cf
+from liqfc.generators.forecast_items import assign_cf_ids, build_revisions, finalize_cf
 from liqfc.generators.fx_rates import generate_rates
 from liqfc.generators.ledger import build_ledger
 from liqfc.generators.payables import build_payable_events, generate_payables, recurring_item_count
@@ -64,18 +65,21 @@ def generate_baseline(settings) -> tuple[Dataset, GenContext]:
         ctx, entities, accounts, n["receivables_single"], n["instalment"], n["ic_pairs"])
     pay, pay_items, pay_settle = generate_payables(ctx, entities, accounts, n["suppliers"], n["one_off"], ic_pay)
     cf, links = assign_cf_ids(ctx, pd.concat([rec_items, pay_items], ignore_index=True))
-    ledger, accounts = build_ledger(ctx, accounts, pd.concat([rec_settle, pay_settle], ignore_index=True))
+    ledger, accounts, cash_events = build_ledger(ctx, accounts, pd.concat([rec_settle, pay_settle], ignore_index=True))
     actuals = build_actuals(ctx, ledger, cf)
     rec_events, rec = build_receivable_events(ctx, rec, actuals, rec_plan)
     pay_events, pay = build_payable_events(ctx, pay, actuals)
     cf = finalize_cf(cf, actuals, rec, pay)
-    statements = build_statements(ctx, accounts, ledger)
+    revisions, cf = build_revisions(ctx, cf, actuals)
+    bank_lines = build_bank_lines(ctx, accounts, cash_events)
+    statements = build_statements(ctx, accounts, bank_lines)
     ds = Dataset({
         "legal_entity": entities, "bank_account": accounts, "account_status_event": account_events,
         "currency_rate": rates, "liquidity_scenario": scenarios, "scenario_assumption": assumptions,
         "receivable": rec, "receivable_status_event": rec_events, "payable": pay, "payable_status_event": pay_events,
         "ledger_entry": ledger, "actual_cash_flow": actuals, "account_balance_statement": statements,
-        "cash_flow_forecast": cf, "forecast_source_link": links,
+        "bank_statement_line": bank_lines,
+        "cash_flow_forecast": cf, "cash_flow_forecast_revision": revisions, "forecast_source_link": links,
     }, label="baseline")
     return ds.conform(), ctx
 
@@ -95,12 +99,13 @@ class SystemResult:
     attribution_raw: pd.DataFrame
     comparison_raw: pd.DataFrame
     run_accounts_raw: pd.DataFrame
+    run_holds: dict = field(default_factory=dict)
 
 
 def run_system(ds: Dataset, settings) -> SystemResult:
     """Calculate positions, detect anomalies, execute forecast runs and compare with actuals."""
     cal, fx = make_fx(ds, settings)
-    positions = daily_cash_positions(ds, settings, fx)
+    positions, recon_items = daily_cash_positions(ds, settings, fx)
     consolidated = consolidated_positions(positions, ds["legal_entity"], settings.reporting_currency)
     detections = detect_all(ds, positions, cal, settings)
     flagged = flagged_cf_ids(detections)
@@ -108,9 +113,10 @@ def run_system(ds: Dataset, settings) -> SystemResult:
     fc, specs = execute_all(ds, settings, cal, fx, input_hash)
 
     code_of = {s.run_id: s.code for s in specs}
+    valid_ledger, _ = split_ledger_by_currency(ds["ledger_entry"], ds["bank_account"])
     atts, comps = [], []
     for _, run in fc["forecast_run"].iterrows():
-        att = attribute_run(run, fc["forecast_run_line"], ds["ledger_entry"], ds["actual_cash_flow"],
+        att = attribute_run(run, fc["forecast_run_line"], valid_ledger, ds["actual_cash_flow"],
                             ds["cash_flow_forecast"], flagged, settings.end)
         atts.append(att)
         comps.append(compare_run(run, code_of[run["forecast_run_id"]], fc["forecast_position"], fc["forecast_run_account"],
@@ -121,8 +127,9 @@ def run_system(ds: Dataset, settings) -> SystemResult:
 
     lifecycle = RunLifecycle(settings.id_year)
     runs = fc["forecast_run"].set_index("forecast_run_id")
-    breaks = positions.loc[positions["reconciliation_status"] == "BREAK", ["account_id", "position_date"]]
+    breaks = material_breaks(positions, settings)
     ra = fc["forecast_run_account"]
+    holds: dict[str, list[str]] = {}
     for spec in specs:
         gen = runs.at[spec.run_id, "generated_at"]
         lifecycle.transition(spec.run_id, "DRAFT", gen, spec.actor, "Run requested")
@@ -130,21 +137,24 @@ def run_system(ds: Dataset, settings) -> SystemResult:
         if spec.supersedes:
             lifecycle.transition(spec.supersedes, "SUPERSEDED", gen + pd.Timedelta(seconds=2), spec.actor,
                                  f"Superseded by {spec.run_id}: {spec.reason}")
-        stale = ra[(ra["forecast_run_id"] == spec.run_id) & ra["fx_rate_status"].isin(["STALE_FALLBACK", "MISSING"])]
-        disputed = breaks[breaks["position_date"] < spec.cutoff]
-        if stale.empty and disputed.empty:
+        reasons = run_holds(spec, ra, breaks, settings)
+        if reasons:
+            holds[spec.run_id] = reasons
+        else:
             lifecycle.transition(spec.run_id, "APPROVED", gen + pd.Timedelta(seconds=30), "RISK_REVIEWER",
                                  "No open review exceptions affect run inputs")
     run_events = lifecycle.frame()
     fc["forecast_run"]["run_status"] = fc["forecast_run"]["forecast_run_id"].map(lifecycle.status)
 
     derived = {
-        "daily_cash_position": positions, "consolidated_cash_position": consolidated, **fc,
+        "daily_cash_position": positions, "bank_reconciliation_item": recon_items,
+        "consolidated_cash_position": consolidated, **fc,
         "forecast_comparison": comparison, "variance_attribution": attribution, "liquidity_alert": alerts,
         "forecast_run_event": run_events,
     }
     derived = {k: canonical_frame(v, k) for k, v in derived.items()}
-    return SystemResult(ds.label, derived, detections, positions, specs, attribution, comparison, fc["forecast_run_account"])
+    return SystemResult(ds.label, derived, detections, positions, specs, attribution, comparison, fc["forecast_run_account"],
+                        holds)
 
 
 def build_exceptions(result: SystemResult, validation_failures: pd.DataFrame, settings) -> pd.DataFrame:
@@ -173,7 +183,8 @@ def build_exceptions(result: SystemResult, validation_failures: pd.DataFrame, se
         val["source"] = "VALIDATION"
         val["forecast_run_id"] = None
         val["detected_at"] = gts + pd.Timedelta(hours=2)
-    out = pd.concat([det, guard, val], ignore_index=True)
+    parts = [p for p in (det, guard, val) if len(p)]
+    out = pd.concat(parts, ignore_index=True) if parts else det.assign(source=None, forecast_run_id=None, detected_at=None)
     out["resolution_status"] = [
         "RESOLVED" if (d == "AUTO_RESOLVED" or s == "FORECAST_GUARD") else "OPEN" for d, s in zip(out["decision"], out["source"])]
     order = {"DETECTION": 0, "FORECAST_GUARD": 1, "VALIDATION": 2}
@@ -200,6 +211,10 @@ def build_audit(result: SystemResult, exceptions: pd.DataFrame, validation_summa
     for a in result.derived["liquidity_alert"].itertuples(index=False):
         ts = runs.set_index("forecast_run_id").at[a.forecast_run_id, "generated_at"] + pd.Timedelta(seconds=3)
         trail.record(ts, "SYSTEM", "LIQUIDITY_ALERT_RAISED", "liquidity_alert", a.alert_id, scope=a.scope_id, severity=a.severity)
+    gen_at = runs.set_index("forecast_run_id")["generated_at"]
+    for rid, reasons in sorted(result.run_holds.items()):
+        trail.record(gen_at[rid] + pd.Timedelta(seconds=30), "SYSTEM", "FORECAST_RUN_HELD", "forecast_run", rid,
+                     policy="RUN-01", reasons=reasons)
     trail.record(settings.generation_ts + pd.Timedelta(hours=2), "SYSTEM", "VALIDATION_COMPLETED", "dataset",
                  result.label, passed=validation_summary.get("passed"), failed=validation_summary.get("failed"))
     return trail.frame()

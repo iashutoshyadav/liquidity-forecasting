@@ -43,29 +43,41 @@ Rule IDs appear in code docstrings, `variance_attribution.rule_id` and `exceptio
 | PAY-08 | An intercompany payable mirrors its receivable: same amount, currency and date, with an account in the debtor entity in that currency. |
 | LED-01 | Settlement entries are posted for every receivable/payable payment within the data range. |
 | LED-02 | Monthly bank fee per active account on the last business day (15–250 USD equivalent). |
-| LED-03 | Sundry receipts and payments fill the configured ledger count exactly. They are lognormal and weighted by account type and √size. |
-| LED-04 | Opening balance = buffer(account type × monthly revenue) + max(0, −min cumulative flow), rounded up to 1,000 units. The clean baseline therefore never goes negative. |
+| LED-03 | Sundry receipts and payments fill the configured ledger count exactly. They are small tickets (lognormal, median 0.06% of monthly revenue, capped at 1%), weighted by account type and √size, roughly balanced between receipts and payments, and follow a weekday profile (Mon 1.15, Tue 1.0, Wed 0.95, Thu 1.0, Fri 1.2) with ×1.4 activity on the last two business days of each month. |
+| LED-04 | Pooled accounts open at their sweep target. Every other account opens at buffer(account type × monthly revenue) + max(0, −min cumulative flow including sweeps), rounded up to 1,000 units. The clean baseline therefore never goes negative. |
+| LED-07 | **Cash pool.** Each entity's COLLECTION and DISBURSEMENT accounts in its functional currency are pooled under its OPERATING account (`sweep_parent_account_id`). On the last business day of every Mon–Sun week, each pooled account is swept back to `sweep_target_minor`, defined as 0.05 × monthly revenue plus its largest intra-week drawdown. The difference moves to or from the OPERATING account as an INTERNAL_TRANSFER_OUT / INTERNAL_TRANSFER_IN pair, posted the same day. Interest and a per-sweep bank fee (2–10 USD equivalent) are booked before that day's sweep, so a week without activity still sweeps a non-zero amount. PAYROLL, RESERVE and foreign-currency accounts aren't pooled. Sweep slots are fixed in advance (pooled accounts × weeks × 2), so ledger volume stays exact. |
 | LED-05 | Monthly interest = half_even(month-end balance × bp × days / 365 / 10,000), where the balance includes interest already credited. |
-| LED-06 | 5% of entries post on the next business day (never beyond range end). `recorded_at` = posting date 18:00Z. |
+| LED-06 | 5% of non-sweep entries post on the next business day (never beyond range end). `recorded_at` = posting date 18:00Z. |
 | CF-01 | Forecast items are created from receivable instalments and payables. `known_at` = invoice/known date 09:00Z. IDs follow sort order. |
 | CF-02 | Payroll item `basis_actual_id` = previous month's payroll actual, recorded before `known_at`. |
 | CF-03 | Item status is derived from settlements: SETTLED / PARTIALLY_SETTLED / OPEN; CANCELLED or WRITTEN_OFF from the source status. |
-| STM-01 | The bank statement for each account and calendar day is built from the bank feed (value-dated movements) by separate code: opening, credits, debits, closing, count. |
+| CF-04 | **Revision history.** Every forecast item has an append-only version history in `cash_flow_forecast_revision`. Revision 1 holds the original values, known at the item's `known_at`. About 6% of single-instalment customer receipts get a CUSTOMER_PROMISE revision (a new expected date), recorded strictly after the item became known and strictly before its first settlement was recorded. The `cash_flow_forecast` row always equals the latest revision. |
+| BNK-01 | **Independent bank model.** The bank's transaction feed (`bank_statement_line`) is generated from the economic cash events by bank rules. It never reads ledger rows. Most events are booked on their value date for the same amount. |
+| BNK-02 | 5% of customer and sundry receipts clear 1–2 business days later at the bank. A line that would be booked after the data end is not on the statements yet. |
+| BNK-03 | 4% of outgoing supplier, intercompany and one-off payments carry a wire charge (5–40 USD equivalent) booked by the bank on the same day. The ledger never records it. |
+| BNK-04 | Statements (`account_balance_statement`) are built only from bank lines: opening = account opening balance; closing = opening + credits − debits by booking date. |
 
 ## Positions and forecasting
 
 | ID | Rule |
 |---|---|
 | BAL-01..04 | See `engine/balances.py`: closing = opening + credits − debits, continuity, conversion and statement reconciliation. |
+| BAL-02 | A ledger entry whose currency differs from its account's is **quarantined**. It is excluded from balances, forecast opening balances and variance attribution, never summed, and logged as CCY-001 (REJECTED). The pipeline continues. |
+| REC-01 | Each valid ledger entry matches one bank line on the same account and exact amount, booked on its value date or up to 3 business days later. Matching is one-to-one, in (ledger date, lag, ids) order. |
+| REC-02 | Item statuses: MATCHED; TIMING_DIFFERENCE (bank later); BANK_ONLY (bank charge, or the bank side of a currency-quarantined entry); LEDGER_ONLY (in transit: clearing window runs past the data end); UNMATCHED_BANK / UNMATCHED_LEDGER (no match and no documented reason, a genuine break). Every ledger entry and bank line appears in exactly one item (`bank_reconciliation_item`). |
+| REC-03 | Daily: explained difference = open BANK_ONLY − LEDGER_ONLY − in-flight TIMING amounts. A day is RECONCILED when statement − ledger = 0, RECONCILING_ITEM when it equals the explained amount, and BREAK otherwise (BAL-001). UNMATCHED items are never explained. |
 | FC-01 | cutoff_ts = cutoff date 00:00Z. Records are used only when `recorded_at` / `known_at` < cutoff_ts. |
-| FC-02 | Run opening balance = account opening + ledger entries recorded before cutoff. |
+| FC-02 | Run opening balance = account opening + ledger entries recorded before cutoff, excluding quarantined entries (BAL-02). |
+| FC-10 | Forecast runs project the weekly cash-pool sweeps with the LED-07 rule, using the opening balance known at cutoff and the run's own lines (`forecast_run_line.source_type = SWEEP`). |
+| FC-11 | A forecast run reads each item's **latest revision known strictly before the cutoff** (`forecast_run.items_as_of`). Later revisions can't change an earlier run. `forecast_run_line.revision_id` records the version used. |
 | FC-03 | Candidate items are known before cutoff and not cancelled or written off before cutoff. Remaining = amount − settlements recorded before cutoff; any settlement closes a payroll item. |
 | FC-04 | Overdue unsettled items are re-dated: receivables to cutoff + 7 days, payables to cutoff (next business day). |
-| FC-05 | Guards: CUTOFF_LEAKAGE, MIXED_CURRENCY and DUPLICATE_CASH_FLOW lines are EXCLUDED with a reason and logged. |
+| FC-05 | Guards: CUTOFF_LEAKAGE, MIXED_CURRENCY and DUPLICATE_CASH_FLOW lines are EXCLUDED with a reason and logged. A duplicate is a second item for the same (source_type, source_id, instalment_no), or a link that pushes a source's allocation above 100%, whether or not the item has a source link. It is judged against every item known before the cutoff, including settled ones. The surviving item is the one with settlements recorded before the cutoff, otherwise the earliest (known_at, cf_id). |
+| FC-09 | Every forecast item must have a `forecast_source_link` row to its own source (validation `BUS-CF-LINK`; failures are held for review). |
 | FC-06 | Scenario transformation (see `scenarios.md`). Lines pushed beyond the horizon become OUT_OF_HORIZON. |
 | FC-07 | Horizon is 30 days. Cutoffs are 1 March, April, May and June 2026; each cutoff has BASE, DELAYED_RECEIPT and STRESS runs, plus configured re-runs. |
 | FC-08 | Re-runs get the next sequence number for that cutoff. The old run moves to SUPERSEDED and is retained. |
-| RUN-01 | A run is APPROVED automatically by the reviewer policy unless its inputs are touched by an open HELD_FOR_REVIEW item: a stale FX rate used for the run, or a balance break dated before the cutoff. Otherwise it stays EXECUTED, pending review. |
+| RUN-01 | A run is APPROVED automatically unless one of its accounts (a) converted its opening balance with a STALE_FALLBACK/MISSING FX rate, or (b) has an unexplained statement BREAK dated within `approval_policy.balance_break_lookback_days` (7) before the cutoff and at least `balance_break_materiality_reporting_minor` (1,000.00 USD at that day's rate; unconvertible breaks count as material). Held runs stay EXECUTED, and each hold reason is written to the audit trail (`FORECAST_RUN_HELD`). Older breaks don't hold a run, because its opening balance comes from the ledger. `engine/approval.py`. |
 | ALR-01..03 | Liquidity alerts (see `engine/liquidity_alerts.py`): breach when projected closing < policy minimum; CRITICAL when the minimum is negative. Group threshold = sum of entity minimums. |
 
 ## Variance attribution
@@ -76,6 +88,7 @@ Rule IDs appear in code docstrings, `variance_attribution.rule_id` and `exceptio
 | VAR-AMT | AMOUNT | Included item: + actual amounts, −f at the first actual date. Items that will never settle (written off, cancelled, or scenario-only): −f at the forecast date. |
 | VAR-UNF | UNFORECAST | Ledger entries without a forecast item, or items known after cutoff. Grouped per account and day; source = `account|date`. |
 | VAR-ANO | ANOMALY | Actuals of items the detector flagged, which were therefore excluded from the run. |
+| VAR-AMT (pool) | AMOUNT | Cash-pool sweeps, projected (`SWEEP` lines) and actual (INTERNAL_TRANSFER entries), with source `CASH_POOL_SWEEP`. They reallocate variance within a pool and net to zero per pool. |
 | VAR-FX | FX_MOVEMENT | A × rate(d) − A × run rate (reporting currency). |
 | VAR-RES | RESIDUAL | Reporting variance − Σ converted components − FX. Only per-component rounding; |residual| ≤ 6 minor units. |
 

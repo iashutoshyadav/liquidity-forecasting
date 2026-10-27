@@ -70,11 +70,24 @@ def _missing_fx(ds, settings, cal, gt, k):
 
 
 def _cf_pool(ds, settings, used):
+    """Candidate items: in a forecast window, not payroll, untouched, and with a single revision."""
     cf = ds["cash_flow_forecast"]
+    revised = ds["cash_flow_forecast_revision"].groupby("cf_id").size()
     first_cut = pd.Timestamp(min(settings.forecast["cutoff_dates"]))
     last_cut = pd.Timestamp(max(settings.forecast["cutoff_dates"]))
     return cf[(cf["expected_date"] >= first_cut) & (cf["known_at"] < last_cut) & cf["status"].isin(["OPEN", "SETTLED"])
-              & (cf["flow_category"] != "PAYROLL") & ~cf["cf_id"].isin(used)]
+              & (cf["flow_category"] != "PAYROLL") & ~cf["cf_id"].isin(used)
+              & ~cf["cf_id"].isin(set(revised[revised > 1].index))]
+
+
+def _append_revisions(ds, settings, rows: list[dict]) -> list[str]:
+    """Append revision rows with new ids continuing the CFR counter; returns the new ids."""
+    rev = ds["cash_flow_forecast_revision"]
+    new_ids = [ids.seq_id("CFR", settings.id_year, len(rev) + j) for j in range(1, len(rows) + 1)]
+    for r, rid in zip(rows, new_ids):
+        r["revision_id"] = rid
+    ds["cash_flow_forecast_revision"] = pd.concat([rev, pd.DataFrame(rows)], ignore_index=True)
+    return new_ids
 
 
 def _duplicates(ds, settings, gt, k, used):
@@ -83,13 +96,16 @@ def _duplicates(ds, settings, gt, k, used):
     pool = _cf_pool(ds, settings, used)
     pick = pool.iloc[np.sort(rng.choice(len(pool), size=k, replace=False))]
     n_cf, n_link = len(cf), len(links)
-    new_cf, new_links = [], []
+    rev = ds["cash_flow_forecast_revision"]
+    new_cf, new_links, new_revs = [], [], []
     for j, (_, r) in enumerate(pick.iterrows(), start=1):
         new_id = ids.seq_id("CF", settings.id_year, n_cf + j)
         dup = r.copy()
         dup["cf_id"] = new_id
         dup["status"] = "OPEN"
         new_cf.append(dup)
+        for _, v in rev[rev["cf_id"] == r["cf_id"]].sort_values("revision_no").iterrows():
+            new_revs.append({**v.drop("revision_id").to_dict(), "cf_id": new_id})
         src = links[links["cf_id"] == r["cf_id"]].iloc[0]
         new_links.append({"link_id": ids.seq_id("FSL", settings.id_year, n_link + j), "cf_id": new_id,
                           "source_type": src["source_type"], "source_id": src["source_id"], "allocation_bp": src["allocation_bp"]})
@@ -98,10 +114,15 @@ def _duplicates(ds, settings, gt, k, used):
                "AUTO_RESOLVED", f"second forecast inclusion of {r['source_type']} {r['source_id']}")
     ds["cash_flow_forecast"] = pd.concat([cf, pd.DataFrame(new_cf)], ignore_index=True)
     ds["forecast_source_link"] = pd.concat([links, pd.DataFrame(new_links)], ignore_index=True)
+    _append_revisions(ds, settings, new_revs)
 
 
 def _cutoff_leakage(ds, settings, gt, k, used):
-    """A forecast item re-estimated from its own future settlement (hindsight)."""
+    """A back-dated revision: the item re-estimated from its own future settlement (hindsight).
+
+    The revision claims to be known one hour after the item, i.e. before a forecast cutoff, but its
+    values and basis come from a settlement recorded after that cutoff.
+    """
     rng = _rng(settings, "cutoff")
     cf, act = ds["cash_flow_forecast"], ds["actual_cash_flow"]
     H = pd.Timedelta(days=int(settings.forecast["horizon_days"]))
@@ -123,10 +144,14 @@ def _cutoff_leakage(ds, settings, gt, k, used):
         cf.at[i, "basis_actual_id"] = a["actual_id"]
         cf.at[i, "expected_date"] = a["actual_date"]
         cf.at[i, "amount_minor"] = int(a["amount_minor"])
+        rid = _append_revisions(ds, settings, [{
+            "cf_id": cid, "revision_no": 2, "known_at": cf.at[i, "known_at"] + pd.Timedelta(hours=1),
+            "expected_date": a["actual_date"], "amount_minor": int(a["amount_minor"]), "currency": cf.at[i, "currency"],
+            "basis_actual_id": a["actual_id"], "reason": "REESTIMATE"}])[0]
         used.add(cid)
         gt.add("CUTOFF_LEAKAGE", "cash_flow_forecast", cid, "basis_actual_id", orig["basis_actual_id"], a["actual_id"],
                "CUT-001", "REJECTED",
-               f"expected_date {orig['expected_date']:%Y-%m-%d}->{a['actual_date']:%Y-%m-%d}, amount "
+               f"back-dated revision {rid}: expected_date {orig['expected_date']:%Y-%m-%d}->{a['actual_date']:%Y-%m-%d}, amount "
                f"{orig['amount_minor']}->{int(a['amount_minor'])} copied from actual recorded {a['recorded_at']:%Y-%m-%dT%H:%M:%SZ}")
 
 
@@ -145,6 +170,9 @@ def _mixed_currency(ds, settings, fx, gt, k, used):
         i = cf.index[cf["cf_id"] == r.cf_id][0]
         cf.at[i, "currency"] = new_ccy
         cf.at[i, "amount_minor"] = int(new_amt) if new_amt != 0 else int(np.sign(r.amount_minor))
+        rev = ds["cash_flow_forecast_revision"]
+        j = rev.index[rev["cf_id"] == r.cf_id][0]
+        rev.at[j, "currency"], rev.at[j, "amount_minor"] = new_ccy, int(cf.at[i, "amount_minor"])
         used.add(r.cf_id)
         gt.add("MIXED_CURRENCY", "cash_flow_forecast", r.cf_id, "currency", r.currency, new_ccy, "CCY-001", "REJECTED",
                f"amount restated {r.amount_minor} {r.currency} -> {int(new_amt)} {new_ccy} on a {r.currency} account")

@@ -2,10 +2,14 @@
 
 BAL-01 closing(d) = opening(d) + credits(d) - debits(d); opening(d) = closing(d-1);
        opening(start) = bank_account.opening_balance_minor. Value date drives balances.
-BAL-02 entries must be in the account currency (guard; never summed across currencies).
+BAL-02 entries must be in the account currency; entries that are not are quarantined (excluded from
+       balances, forecasts and variance, never summed across currencies) and raised as CCY-001.
 BAL-03 account closing converted to reporting currency with the effective rate for d;
        entity/group = sum of converted account balances (unconverted accounts excluded and counted).
-BAL-04 calculated closing is reconciled to the bank statement closing for the same account/date.
+BAL-04 calculated closing is reconciled to the independent bank statement closing for the same
+       account/date (engine/bank_reconciliation.py): a difference fully explained by open reconciling
+       items (timing, bank-only, ledger-only, incl. quarantined entries) is RECONCILING_ITEM; any other
+       difference is a BREAK.
 """
 from __future__ import annotations
 
@@ -13,14 +17,20 @@ import numpy as np
 import pandas as pd
 
 from liqfc.core.dataset import Dataset
+from liqfc.engine.bank_reconciliation import explained_difference, match_items
 from liqfc.engine.fx_conversion import FxLookup, convert_to_reporting, rate_text
+
+
+def split_ledger_by_currency(ledger: pd.DataFrame, accounts: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """(entries in their account currency, quarantined entries in any other currency)."""
+    acc_ccy = accounts.set_index("account_id")["currency"]
+    ok = ledger["currency"].values == ledger["account_id"].map(acc_ccy).values
+    return ledger[ok], ledger[~ok]
 
 
 def account_daily_balances(accounts: pd.DataFrame, ledger: pd.DataFrame, start, end) -> pd.DataFrame:
     acc_ccy = accounts.set_index("account_id")["currency"]
-    bad = ledger["currency"].values != ledger["account_id"].map(acc_ccy).values
-    if bad.any():
-        raise ValueError(f"{int(bad.sum())} ledger entries are not in their account currency")
+    ledger, _ = split_ledger_by_currency(ledger, accounts)
     days = pd.date_range(start, end, freq="D")
     grid = pd.MultiIndex.from_product([sorted(accounts["account_id"]), days], names=["account_id", "position_date"])
     amt = ledger["amount_minor"].astype(np.int64)
@@ -39,7 +49,8 @@ def account_daily_balances(accounts: pd.DataFrame, ledger: pd.DataFrame, start, 
     return out
 
 
-def daily_cash_positions(ds: Dataset, settings, fx: FxLookup) -> pd.DataFrame:
+def daily_cash_positions(ds: Dataset, settings, fx: FxLookup) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Daily positions with bank reconciliation; returns (positions, bank_reconciliation_item rows)."""
     pos = account_daily_balances(ds["bank_account"], ds["ledger_entry"], settings.start, settings.end)
     rates = fx.frame(pos.rename(columns={"position_date": "date"}), "currency", "date")
     pos = pos.merge(rates.rename(columns={"date": "position_date"}), on=["currency", "position_date"], how="left")
@@ -54,8 +65,20 @@ def daily_cash_positions(ds: Dataset, settings, fx: FxLookup) -> pd.DataFrame:
     pos = pos.merge(st, on=["account_id", "position_date"], how="left")
     pos["statement_closing_minor"] = pos["statement_closing_minor"].astype("Int64")
     pos["reconciliation_difference_minor"] = (pos["statement_closing_minor"] - pos["closing_balance_minor"]).astype("Int64")
-    pos["reconciliation_status"] = np.where(pos["reconciliation_difference_minor"].fillna(1) == 0, "RECONCILED", "BREAK")
-    return pos
+    valid, quarantined = split_ledger_by_currency(ds["ledger_entry"], ds["bank_account"])
+    items = match_items(valid, ds["bank_statement_line"], fx.cal,
+                        int(settings.raw["reconciliation"]["match_window_business_days"]), settings.id_year,
+                        quarantined=quarantined, data_end=settings.end)
+    pos = pos.sort_values(["account_id", "position_date"], kind="mergesort").reset_index(drop=True)
+    expl = explained_difference(items, pd.MultiIndex.from_frame(pos[["account_id", "position_date"]]))
+    pos["explained_difference_minor"] = pd.array(expl.to_numpy(), dtype="Int64")
+    diff = pos["reconciliation_difference_minor"]
+    known = diff.notna().to_numpy()
+    d = diff.fillna(0).astype(np.int64).to_numpy()
+    e = expl.to_numpy()
+    pos["reconciliation_status"] = np.where(known & (d == 0), "RECONCILED",
+                                            np.where(known & (d == e), "RECONCILING_ITEM", "BREAK"))
+    return pos, items
 
 
 def consolidated_positions(positions: pd.DataFrame, entities: pd.DataFrame, reporting: str) -> pd.DataFrame:

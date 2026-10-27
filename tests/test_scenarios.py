@@ -29,7 +29,7 @@ def test_scenario_equals_documented_transformation(base_result, baseline, settin
     cal, _ = calfx
     cat = baseline["cash_flow_forecast"].set_index("cf_id")["flow_category"]
     for cut, m in _runs_by_cutoff(base_result).items():
-        base = _lines(base_result, m["SCN-BASE"]).set_index("cf_id")
+        base = _lines(base_result, m["SCN-BASE"]).dropna(subset=["cf_id"]).set_index("cf_id")
         for code in ["DELAYED_RECEIPT", "STRESS"]:
             p = settings.scenarios[code]
             prop = float(Decimal(p["receivable_delay"]["proportion"]))
@@ -44,14 +44,14 @@ def test_scenario_equals_documented_transformation(base_result, baseline, settin
                     exp_a = money.div_half_even(exp_a * (10000 - p["collection_haircut_bp"]), 10000)
                 assert items.at[cid, "adjusted_date"] == exp_d
                 assert int(items.at[cid, "adjusted_amount_minor"]) == exp_a
-            extra = sl[sl["cf_id"].isna()]
+            extra = sl[sl["source_type"] == "SCENARIO"]
             assert len(extra) == (1 if p["one_off_payment"] else 0)
 
 
 def test_unrelated_cash_flows_unchanged(base_result, baseline):
     cat = baseline["cash_flow_forecast"].set_index("cf_id")["flow_category"]
     for cut, m in _runs_by_cutoff(base_result).items():
-        base = _lines(base_result, m["SCN-BASE"]).set_index("cf_id")
+        base = _lines(base_result, m["SCN-BASE"]).dropna(subset=["cf_id"]).set_index("cf_id")
         dl = _lines(base_result, m["SCN-DELAYED_RECEIPT"])
         dl = dl[dl["cf_id"].notna()].set_index("cf_id")
         other = [c for c in base.index if cat[c] != "CUSTOMER_RECEIPT"]

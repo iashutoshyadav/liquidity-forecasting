@@ -103,11 +103,12 @@ def data_quality_metrics(summary: dict, positions: pd.DataFrame) -> dict:
         f = sum(c["failures"] for c in sel)
         return _ratio(n - f, n)
 
-    rec = positions["reconciliation_status"].eq("RECONCILED")
+    rec = positions["reconciliation_status"].ne("BREAK")
     non_id = positions[positions["fx_rate_status"] != "IDENTITY"]
     valid = non_id["fx_rate_status"].isin(["EXACT", "PRIOR_BUSINESS_DAY"])
     return {"pk_uniqueness_rate": rate("STR-PK-"), "fk_pass_rate": rate("STR-FK-"),
             "reconciliation_pass_rate": _ratio(int(rec.sum()), len(rec)),
+            "reconciling_item_days": int(positions["reconciliation_status"].eq("RECONCILING_ITEM").sum()),
             "valid_fx_conversion_coverage": _ratio(int(valid.sum()), len(non_id)),
             "fx_conversions_with_fallback": int(non_id["fx_rate_status"].eq("STALE_FALLBACK").sum()),
             "validation_pass_rate": summary["pass_rate"]}

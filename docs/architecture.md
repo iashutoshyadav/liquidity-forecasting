@@ -12,8 +12,10 @@ core/        config · rng (named independent streams) · ids · schema (single 
         │
         ▼
 generators/  entities → accounts (+status events) → fx_rates → [scenarios] → receivables →
-             payables → forecast_items (CF ids) → ledger (opening calibration, fees, sundry,
-             derived interest) → actual_cash_flows → status events → balance_statements
+             payables → forecast_items (CF ids) → ledger (cash pool, opening calibration, fees,
+             sundry, derived interest; also returns economic cash events) → actual_cash_flows →
+             status events → forecast-item revisions → bank model (bank lines + statements from
+             the cash events, never from ledger rows)
         │  clean baseline
         ▼
 validation/  structural + business + volume + SQLite FK check on the clean baseline  ── must pass
@@ -23,8 +25,10 @@ anomalies/   injectors (5 labelled edge cases)  ──────────�
         │  injected dataset (detector input)                          │
         ▼                                                            │
 engine/      balances → daily/consolidated positions (FX effective-dated)   │
+             bank_reconciliation (ledger ↔ bank lines, explained vs breaks)  │
              anomaly_detection (5 independent rules, no ground truth)       │
-             forecast_run (cutoff, guards, scenarios, projections, metrics) │
+             forecast_run (revisions as of cutoff, guards, scenarios, sweeps)│
+             approval (RUN-01 scoped holds)                                 │
              variance (step attribution with source references)            │
              liquidity_alerts · audit (run lifecycle, audit trail)          │
         │                                                                   │
@@ -52,9 +56,11 @@ pure function of the configuration and the outputs of earlier stages.
 | `core/dataset.py` | Named DataFrames conformed to schema column order and PK sort |
 | `generators/*` | Master data first, then dependent transactions; hidden profiles drive documented rules |
 | `engine/fx_conversion.py` | Effective-dated rate lookup (EXACT / PRIOR_BUSINESS_DAY / STALE_FALLBACK / MISSING); never substitutes 1 |
-| `engine/balances.py` | Account → entity → group daily positions; statement reconciliation |
+| `engine/balances.py` | Account → entity → group daily positions; currency quarantine; reconciliation status |
+| `engine/bank_reconciliation.py` | Ledger ↔ bank-line matching (MATCHED / TIMING_DIFFERENCE / BANK_ONLY / LEDGER_ONLY / UNMATCHED_*), explained difference per day |
+| `engine/approval.py` | Forecast-run approval policy: holds only for stale FX or material recent breaks on the run's accounts |
 | `engine/scenarios.py` | Scenario tables and the only allowed transformation of BASE |
-| `engine/forecast_run.py` | Run plan, cutoff filter, guards, scenario lines, projections, run metrics |
+| `engine/forecast_run.py` | Run plan, item versions as of cutoff (`items_as_of`), guards, scenario and sweep lines, projections, run metrics |
 | `engine/variance.py` | Actual vs forecast, step attribution, reporting-currency decomposition |
 | `engine/anomaly_detection.py` | 5 detectors; their rule functions also act as forecast guards |
 | `engine/liquidity_alerts.py` | Policy breaches per run and scope |
@@ -73,6 +79,8 @@ pure function of the configuration and the outputs of earlier stages.
 * **Detection drives decisions.** Rule functions are shared by the detector and the forecast engine. Records flagged as leakage or mixed currency are REJECTED (excluded and logged), duplicates are AUTO_RESOLVED (later inclusion excluded), and balance breaks and missing FX rates are HELD_FOR_REVIEW. A run that touches a held item stays EXECUTED and is not APPROVED.
 * **History is append-only.** All state changes are events. A re-run creates a new `FCAST-<cutoff>-<seq>` and moves the old run to SUPERSEDED; nothing is overwritten.
 * **Hybrid data, offline and pinned.** Real FX rates and delay calibration come from versioned extracts committed in `data/external/`. Their checksums enter the config hash and the manifest, and `--data-mode synthetic` reproduces the fully synthetic dataset.
+* **Versioned forecast items.** Item values come from an append-only revision table; runs read the version known before their cutoff, so later information can't rewrite a past forecast.
+* **Independent bank side.** Bank lines are produced from economic events by bank rules (clearing delays, bank-only charges). Reconciliation must explain every difference, or report a break.
 * **Determinism.** Named RNG streams, a fixed generation timestamp, stable mergesorts, IDs assigned after sorting, and canonical LF/UTF-8 serialisation.
 
 ## Output layout (`output/<scale>/`)

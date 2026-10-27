@@ -43,6 +43,8 @@ Primary key: `account_id`
 | `opening_balance_date` | date | Y | |  | |  | | Date of the opening balance (dataset start) |
 | `opening_balance_minor` | int | Y | | minor units of `currency` | |  | calibrated so baseline stays above buffer | Balance at start of opening_balance_date |
 | `annual_interest_bp` | int | Y | | basis points p.a. | |  | >= 0 | Credit interest rate |
+| `sweep_parent_account_id` | str | N | |  | | bank_account.account_id | | Cash-pool header (the entity's OPERATING account, same currency); null if not pooled |
+| `sweep_target_minor` | int | N | | minor units of `currency` | |  | > 0; set iff sweep_parent_account_id is set | Balance a pooled account is swept back to each week |
 | `status` | str | Y | ACTIVE, DORMANT, CLOSED | |  | |  | Current status = last account_status_event |
 
 ### `account_status_event` — AccountStatusEvent
@@ -203,7 +205,7 @@ Primary key: `ledger_entry_id`
 | `recorded_at` | ts | Y | |  | |  | | When the entry became visible to treasury (cutoff test) |
 | `currency` | str | Y | USD, EUR, GBP, INR, JPY | |  | | = account currency | |
 | `amount_minor` | int | Y | | minor units of `currency` | |  | != 0 | Signed: + credit / - debit |
-| `entry_type` | str | Y | CUSTOMER_RECEIPT, INTERCOMPANY_RECEIPT, SUPPLIER_PAYMENT, PAYROLL, RENT, TAX, INTERCOMPANY_PAYMENT, ONE_OFF_PAYMENT, BANK_FEE, INTEREST, SUNDRY_RECEIPT, SUNDRY_PAYMENT | |  | |  | |
+| `entry_type` | str | Y | CUSTOMER_RECEIPT, INTERCOMPANY_RECEIPT, SUPPLIER_PAYMENT, PAYROLL, RENT, TAX, INTERCOMPANY_PAYMENT, ONE_OFF_PAYMENT, BANK_FEE, INTEREST, SUNDRY_RECEIPT, SUNDRY_PAYMENT, INTERNAL_TRANSFER_IN, INTERNAL_TRANSFER_OUT | |  | |  | |
 | `source_type` | str | N | RECEIVABLE, PAYABLE | |  | |  | |
 | `source_id` | str | N | |  | |  | | Receivable/Payable id (polymorphic FK on source_type) |
 | `counterparty_ref` | str | N | |  | |  | |  |
@@ -230,7 +232,7 @@ Primary key: `actual_id`
 
 ### `account_balance_statement` — AccountBalanceStatement
 
-Bank-reported end-of-day balances (independent of treasury calculation).
+Bank-reported end-of-day balances, built only from bank_statement_line.
 
 Primary key: `statement_id`; unique: (account_id, statement_date)
 
@@ -247,9 +249,27 @@ Primary key: `statement_id`; unique: (account_id, statement_date)
 | `entry_count` | int | Y | |  | |  | >= 0 | |
 | `source` | str | Y | SYNTHETIC_BANK_FEED | |  | |  | |
 
+### `bank_statement_line` — BankStatementLine
+
+The bank's own transaction feed, generated from economic events by bank rules (clearing delays, bank-only charges); never read from the ledger.
+
+Primary key: `bank_line_id`
+
+| Field | Type | Req | Allowed values / pattern | Unit | Unique | FK | Validation / derivation | Description |
+|---|---|---|---|---|---|---|---|---|
+| `bank_line_id` | str | Y | `^BSL-\d{4}-\d{8}$` | | Y | |  | |
+| `account_id` | str | Y | |  | | bank_account.account_id | |  |
+| `booking_date` | date | Y | |  | |  | | Date the bank booked the transaction (drives statement balances) |
+| `value_date` | date | Y | |  | |  | <= booking_date | Economic date of the underlying transaction |
+| `currency` | str | Y | USD, EUR, GBP, INR, JPY | |  | |  | |
+| `amount_minor` | int | Y | | minor units of `currency` | |  | != 0 | Signed: + credit / - debit |
+| `bank_tx_code` | str | Y | RECEIPT, PAYMENT, FEE, INTEREST, TRANSFER | |  | |  | |
+| `counterparty_ref` | str | N | |  | |  | |  |
+| `description` | str | Y | |  | |  | |  |
+
 ### `cash_flow_forecast` — CashFlowForecast
 
-Expected cash-flow items (20,000 at full scale).
+Expected cash-flow items (20,000 at full scale). Value fields are the latest revision.
 
 Primary key: `cf_id`
 
@@ -268,6 +288,24 @@ Primary key: `cf_id`
 | `instalment_no` | int | Y | |  | |  | >= 1 | |
 | `basis_actual_id` | str | N | |  | | actual_cash_flow.actual_id | basis recorded_at < known_at | Actual used to estimate the amount |
 | `status` | str | Y | OPEN, PARTIALLY_SETTLED, SETTLED, CANCELLED, WRITTEN_OFF | |  | |  | |
+
+### `cash_flow_forecast_revision` — CashFlowForecastRevision
+
+Append-only version history of forecast items; forecast runs use the latest version known before cutoff.
+
+Primary key: `revision_id`; unique: (cf_id, revision_no)
+
+| Field | Type | Req | Allowed values / pattern | Unit | Unique | FK | Validation / derivation | Description |
+|---|---|---|---|---|---|---|---|---|
+| `revision_id` | str | Y | `^CFR-\d{4}-\d{6}$` | | Y | |  | |
+| `cf_id` | str | Y | |  | | cash_flow_forecast.cf_id | |  |
+| `revision_no` | int | Y | |  | |  | 1, 2, ... contiguous per item; 1 = the original item | |
+| `known_at` | ts | Y | |  | |  | strictly increasing with revision_no; revision 1 = item known_at | When this version became known |
+| `expected_date` | date | Y | |  | |  | |  |
+| `amount_minor` | int | Y | | minor units of `currency` | |  | != 0 | |
+| `currency` | str | Y | USD, EUR, GBP, INR, JPY | |  | |  | |
+| `basis_actual_id` | str | N | |  | | actual_cash_flow.actual_id | basis recorded_at < known_at | |
+| `reason` | str | Y | INITIAL, CUSTOMER_PROMISE, REESTIMATE | |  | |  | |
 
 ### `forecast_source_link` — ForecastSourceLink
 
@@ -308,7 +346,26 @@ Primary key: `account_id, position_date`
 | `closing_balance_reporting_minor` | int | N | | minor units of reporting currency (USD cents) | |  | |  |
 | `statement_closing_minor` | int | N | | minor units of `currency` | |  | |  |
 | `reconciliation_difference_minor` | int | N | | minor units of `currency` | |  | statement - calculated | |
-| `reconciliation_status` | str | Y | RECONCILED, BREAK | |  | |  | |
+| `explained_difference_minor` | int | N | | minor units of `currency` | |  | | Part of the difference explained by open reconciling items (timing, bank-only, ledger-only) |
+| `reconciliation_status` | str | Y | RECONCILED, RECONCILING_ITEM, BREAK | |  | |  | |
+
+### `bank_reconciliation_item` — BankReconciliationItem
+
+One row per ledger entry and bank line: matched, timing difference, bank-only or ledger-only.
+
+Primary key: `recon_item_id`
+
+| Field | Type | Req | Allowed values / pattern | Unit | Unique | FK | Validation / derivation | Description |
+|---|---|---|---|---|---|---|---|---|
+| `recon_item_id` | str | Y | `^REC-\d{4}-\d{8}$` | | Y | |  | |
+| `account_id` | str | Y | |  | | bank_account.account_id | |  |
+| `ledger_entry_id` | str | N | |  | | ledger_entry.ledger_entry_id | |  |
+| `bank_line_id` | str | N | |  | | bank_statement_line.bank_line_id | |  |
+| `amount_minor` | int | Y | | minor units of `currency` | |  | |  |
+| `ledger_date` | date | N | |  | |  | |  |
+| `bank_date` | date | N | |  | |  | |  |
+| `match_status` | str | Y | MATCHED, TIMING_DIFFERENCE, BANK_ONLY, LEDGER_ONLY, UNMATCHED_BANK, UNMATCHED_LEDGER | |  | |  | |
+| `explanation` | str | Y | |  | |  | |  |
 
 ### `consolidated_cash_position` — ConsolidatedCashPosition
 
@@ -394,8 +451,9 @@ Primary key: `line_id`
 | `line_id` | str | Y | `^FCAST-\d{4}-\d{2}-\d{2}-\d{3}-L\d{6}$` | | Y | |  | |
 | `forecast_run_id` | str | Y | |  | | forecast_run.forecast_run_id | |  |
 | `cf_id` | str | N | |  | | cash_flow_forecast.cf_id | |  |
+| `revision_id` | str | N | |  | | cash_flow_forecast_revision.revision_id | | Item version used (latest known before cutoff) |
 | `account_id` | str | Y | |  | | bank_account.account_id | |  |
-| `source_type` | str | Y | RECEIVABLE, PAYABLE, SCENARIO | |  | |  | |
+| `source_type` | str | Y | RECEIVABLE, PAYABLE, SCENARIO, SWEEP | |  | |  | |
 | `source_id` | str | Y | |  | |  | |  |
 | `currency` | str | Y | USD, EUR, GBP, INR, JPY | |  | |  | |
 | `base_date` | date | Y | |  | |  | |  |
@@ -493,7 +551,7 @@ Primary key: `attribution_id`
 | `category` | str | Y | TIMING, AMOUNT, UNFORECAST, ANOMALY | |  | |  | |
 | `effective_date` | date | Y | |  | |  | | Component applies to all comparison dates >= this |
 | `amount_minor` | int | Y | | minor units of `currency` | |  | |  |
-| `source_type` | str | Y | CASH_FLOW_FORECAST, LEDGER_ENTRY, LEDGER_GROUP, SCENARIO_ASSUMPTION | |  | |  | |
+| `source_type` | str | Y | CASH_FLOW_FORECAST, LEDGER_ENTRY, LEDGER_GROUP, SCENARIO_ASSUMPTION, CASH_POOL_SWEEP | |  | |  | |
 | `source_id` | str | Y | |  | |  | |  |
 | `source_count` | int | Y | |  | |  | |  |
 | `rule_id` | str | Y | |  | |  | |  |
@@ -568,7 +626,7 @@ Primary key: `audit_id`
 | `audit_id` | str | Y | `^AUD-\d{4}-\d{6}$` | | Y | |  | |
 | `event_ts` | ts | Y | |  | |  | |  |
 | `actor_role` | str | Y | SYSTEM, OPERATIONS_ANALYST, RISK_REVIEWER, SYSTEM_ADMIN, ACCOUNT_HOLDER | |  | |  | |
-| `action` | str | Y | FORECAST_RUN_CREATED, FORECAST_RUN_STATUS_CHANGED, EXCEPTION_RAISED, VALIDATION_COMPLETED, LIQUIDITY_ALERT_RAISED | |  | |  | |
+| `action` | str | Y | FORECAST_RUN_CREATED, FORECAST_RUN_STATUS_CHANGED, EXCEPTION_RAISED, VALIDATION_COMPLETED, LIQUIDITY_ALERT_RAISED, FORECAST_RUN_HELD | |  | |  | |
 | `object_type` | str | Y | |  | |  | |  |
 | `object_id` | str | Y | |  | |  | |  |
 | `details` | str | Y | |  | |  | |  |

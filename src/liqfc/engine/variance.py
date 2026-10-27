@@ -12,6 +12,8 @@ VAR-AMT  AMOUNT      included item: +actual amounts, -f at first actual date; it
                      never settle (written off / cancelled / scenario-only): -f at forecast date
 VAR-UNF  UNFORECAST  ledger entries with no forecast item, or items known after C (grouped per account/day)
 VAR-ANO  ANOMALY     actuals of items flagged by the anomaly detector (excluded from the run)
+Cash-pool sweeps (projected sweep lines and actual INTERNAL_TRANSFER entries) are AMOUNT with source
+CASH_POOL_SWEEP; within a pool they net to zero.
 Local identity: variance = timing + amount + unforecast + anomaly (exact integers).
 Reporting: each local component converted at the run's applied rate; VAR-FX = A_rep(rate_d) -
 A(rate_run); VAR-RES = reporting variance - sum(converted components) - FX (rounding only).
@@ -22,6 +24,7 @@ import numpy as np
 import pandas as pd
 
 from liqfc.core import money
+from liqfc.core.enums import SWEEP_ENTRY_TYPES
 
 EXPLAIN = {
     ("TIMING", "CASH_FLOW_FORECAST"): "Forecast item settled on a different date than forecast",
@@ -31,6 +34,7 @@ EXPLAIN = {
     ("TIMING", "LEDGER_ENTRY"): "Actual of an item known before cutoff but forecast outside this window",
     ("ANOMALY", "LEDGER_ENTRY"): "Actual of an item excluded because the anomaly detector flagged it",
     ("UNFORECAST", "LEDGER_GROUP"): "Ledger activity with no forecast item (fees, interest, sundry, new items)",
+    ("AMOUNT", "CASH_POOL_SWEEP"): "Cash-pool sweep, projected vs actual (reallocates variance within the pool; nets to zero per pool)",
 }
 RULE = {"TIMING": "VAR-TIM", "AMOUNT": "VAR-AMT", "UNFORECAST": "VAR-UNF", "ANOMALY": "VAR-ANO"}
 
@@ -44,7 +48,7 @@ def attribute_run(run: pd.Series, lines: pd.DataFrame, ledger: pd.DataFrame, act
     known_at = cf.set_index("cf_id")["known_at"]
 
     new = ledger[(ledger["recorded_at"] >= ts) & (ledger["value_date"] <= wend)][
-        ["ledger_entry_id", "account_id", "value_date", "amount_minor"]].copy()
+        ["ledger_entry_id", "account_id", "value_date", "amount_minor", "entry_type"]].copy()
     new["eff"] = new["value_date"].where(new["value_date"] >= ts, ts)
     new["cf_id"] = new["ledger_entry_id"].map(actuals.set_index("ledger_entry_id")["cf_id"])
     in_run = set(inc["cf_id"].dropna())
@@ -53,8 +57,8 @@ def attribute_run(run: pd.Series, lines: pd.DataFrame, ledger: pd.DataFrame, act
     first_actual = new[new["cf_id"].isin(in_run)].groupby("cf_id")["eff"].min()
     for r in inc.itertuples(index=False):
         f = int(r.adjusted_amount_minor)
-        is_scn = r.source_type == "SCENARIO"
-        src_t = "SCENARIO_ASSUMPTION" if is_scn else "CASH_FLOW_FORECAST"
+        is_scn = r.source_type in ("SCENARIO", "SWEEP")
+        src_t = {"SCENARIO": "SCENARIO_ASSUMPTION", "SWEEP": "CASH_POOL_SWEEP"}.get(r.source_type, "CASH_FLOW_FORECAST")
         src = r.source_id if is_scn else r.cf_id
         never = is_scn or bool(never_status.get(r.cf_id, False))
         fa = None if is_scn else first_actual.get(r.cf_id)
@@ -74,10 +78,12 @@ def attribute_run(run: pd.Series, lines: pd.DataFrame, ledger: pd.DataFrame, act
     cat = np.where(new["cf_id"].isin(in_run), "AMOUNT",
                    np.where(new["cf_id"].isin(flagged), "ANOMALY",
                             np.where(linked & (new["cf_id"].map(known_at) < ts), "TIMING", "UNFORECAST")))
-    new["category"] = cat
+    sweep = new["entry_type"].isin(SWEEP_ENTRY_TYPES).to_numpy()
+    new["category"] = np.where(sweep, "AMOUNT", cat)
     indiv = new[new["category"] != "UNFORECAST"]
     det_e = pd.DataFrame({"account_id": indiv["account_id"], "category": indiv["category"], "effective_date": indiv["eff"],
-                          "amount_minor": indiv["amount_minor"], "source_type": "LEDGER_ENTRY",
+                          "amount_minor": indiv["amount_minor"],
+                          "source_type": np.where(indiv["entry_type"].isin(SWEEP_ENTRY_TYPES), "CASH_POOL_SWEEP", "LEDGER_ENTRY"),
                           "source_id": indiv["ledger_entry_id"], "source_count": 1})
     unf = new[new["category"] == "UNFORECAST"].groupby(["account_id", "eff"])["amount_minor"].agg(["sum", "size"]).reset_index()
     det_u = pd.DataFrame({"account_id": unf["account_id"], "category": "UNFORECAST", "effective_date": unf["eff"],

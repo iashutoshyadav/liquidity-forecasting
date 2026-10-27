@@ -6,8 +6,13 @@ or receive ground truth. The same rule functions double as forecast-engine guard
 Rule            Issue type            Decision          Logic
 BAL-001         BALANCE_MISMATCH      HELD_FOR_REVIEW   statement closing != opening + sum(ledger) recomputed
 FX-001          FX_RATE_MISSING       HELD_FOR_REVIEW   required (currency, business day) rate absent
-DUP-001         DUPLICATE_CASH_FLOW   AUTO_RESOLVED     sum(allocation_bp) of a source > 10000; later items excluded
-CUT-001         CUTOFF_LEAKAGE        REJECTED          basis actual recorded after the item became known
+DUP-001         DUPLICATE_CASH_FLOW   AUTO_RESOLVED     sum(allocation_bp) of a source > 10000, or more than one item
+                                                        for the same (source_type, source_id, instalment_no); later
+                                                        items excluded (HIGH severity when the duplicate has no link)
+CUT-001         CUTOFF_LEAKAGE        REJECTED          basis actual recorded at/after the item (or one of its
+                                                        revisions) became known
+CUT-003         CUTOFF_LEAKAGE        HELD_FOR_REVIEW   current item values match none of its recorded revisions
+                                                        (untracked overwrite: cannot be dated; forecasts ignore it)
 CCY-001         MIXED_CURRENCY        REJECTED          item currency != account currency (cannot be summed)
 """
 from __future__ import annotations
@@ -29,29 +34,69 @@ RULES = {
 }
 
 
-def _frame(issue: str, table: str, records, observed, expected, details) -> pd.DataFrame:
-    rule, decision, severity = RULES[issue]
+def _frame(issue: str, table: str, records, observed, expected, details, severity=None, rule=None,
+           decision=None) -> pd.DataFrame:
+    default_rule, default_decision, default_severity = RULES[issue]
+    rule, decision = rule or default_rule, decision or default_decision
     n = len(records)
+    sev = default_severity if severity is None else list(severity)
     return pd.DataFrame({"rule_id": rule, "issue_type": issue, "affected_table": table,
-                         "affected_record_id": list(records), "severity": severity,
+                         "affected_record_id": list(records), "severity": sev,
                          "observed_value": list(observed), "expected_value": list(expected),
                          "decision": decision, "details": list(details) if n else []}, columns=DETECTION_COLUMNS)
 
 
-def duplicate_excess(cf: pd.DataFrame, links: pd.DataFrame) -> pd.DataFrame:
+def _rank_frame(cf: pd.DataFrame, settled: set | None) -> pd.DataFrame:
+    """Survivor ranking: settled items first, then earliest known_at, then cf_id."""
+    r = cf[["cf_id", "known_at"]].copy()
+    r["unsettled"] = 0 if settled is None else (~r["cf_id"].isin(settled)).astype(int)
+    return r
+
+
+def duplicate_excess(cf: pd.DataFrame, links: pd.DataFrame, settled: set | None = None) -> pd.DataFrame:
     """Items whose inclusion pushes a source's allocation above 100%.
 
-    Items are taken in (known_at, cf_id) order; legitimate instalments sum to exactly 10000 bp
-    and identical amounts/dates on *different* sources are never compared.
+    Items are taken in survivor order (settled first, then known_at, cf_id); legitimate instalments
+    sum to exactly 10000 bp and identical amounts/dates on *different* sources are never compared.
     """
-    l = links.merge(cf[["cf_id", "known_at"]], on="cf_id", how="left")
-    l = l.sort_values(["source_type", "source_id", "known_at", "cf_id"], kind="mergesort")
+    l = links.merge(_rank_frame(cf, settled), on="cf_id", how="left")
+    l = l.sort_values(["source_type", "source_id", "unsettled", "known_at", "cf_id"], kind="mergesort")
     l["cum_bp"] = l.groupby(["source_type", "source_id"])["allocation_bp"].cumsum()
     l["source_total_bp"] = l.groupby(["source_type", "source_id"])["allocation_bp"].transform("sum")
     first = l.groupby(["source_type", "source_id"])["cf_id"].transform("first")
     out = l[l["cum_bp"] > 10000].copy()
     out["kept_cf_id"] = first[l["cum_bp"] > 10000]
     return out
+
+
+ITEM_KEY = ["source_type", "source_id", "instalment_no"]
+
+
+def duplicate_items(cf: pd.DataFrame, links: pd.DataFrame, settled: set | None = None) -> pd.DataFrame:
+    """All duplicate forecast items, whether or not they have a forecast_source_link row.
+
+    Two signals are combined: bridge allocation above 100% (``duplicate_excess``) and more than one
+    item for the same source instalment ``(source_type, source_id, instalment_no)``. Both use one
+    survivor order: items in ``settled`` (that already received cash) first, then (known_at, cf_id);
+    the first item is kept. Instalments differ in instalment_no and items on different sources are
+    never compared, so neither is flagged.
+    """
+    cols = ["cf_id", "source_type", "source_id", "instalment_no", "kept_cf_id", "reason", "source_total_bp", "linked"]
+    alloc = duplicate_excess(cf, links, settled)
+    alloc = alloc.merge(cf[["cf_id", "instalment_no"]], on="cf_id", how="left")
+    alloc["reason"] = "ALLOCATION"
+    ranked = cf.merge(_rank_frame(cf, settled)[["cf_id", "unsettled"]], on="cf_id", how="left")
+    ranked = ranked.sort_values(ITEM_KEY + ["unsettled", "known_at", "cf_id"], kind="mergesort")
+    first = ranked.groupby(ITEM_KEY)["cf_id"].transform("first")
+    is_dup = ranked.duplicated(ITEM_KEY, keep="first")
+    item = ranked.loc[is_dup, ITEM_KEY + ["cf_id"]].copy()
+    item["kept_cf_id"] = first[is_dup]
+    item["reason"] = "ITEM"
+    item["source_total_bp"] = np.nan
+    item = item[~item["cf_id"].isin(set(alloc["cf_id"]))]
+    out = pd.concat([alloc, item], ignore_index=True)
+    out["linked"] = out["cf_id"].isin(set(links["cf_id"]))
+    return out.reindex(columns=cols).sort_values("cf_id", kind="mergesort").reset_index(drop=True)
 
 
 def currency_mismatch(cf: pd.DataFrame, accounts: pd.DataFrame) -> pd.DataFrame:
@@ -96,19 +141,54 @@ def detect_missing_fx(ds: Dataset, cal, settings) -> pd.DataFrame:
 
 
 def detect_duplicates(ds: Dataset) -> pd.DataFrame:
-    d = duplicate_excess(ds["cash_flow_forecast"], ds["forecast_source_link"])
-    return _frame("DUPLICATE_CASH_FLOW", "cash_flow_forecast", d["cf_id"], d["source_total_bp"].astype(str),
-                  ["<= 10000"] * len(d),
-                  [f"{t} {s} already covered by {k}; excluded from forecasts" for t, s, k in
-                   zip(d["source_type"], d["source_id"], d["kept_cf_id"])])
+    d = duplicate_items(ds["cash_flow_forecast"], ds["forecast_source_link"], set(ds["actual_cash_flow"]["cf_id"]))
+    alloc = d["reason"] == "ALLOCATION"
+    observed = [str(int(b)) if a else f"duplicate of {k}" for a, b, k in zip(alloc, d["source_total_bp"], d["kept_cf_id"])]
+    expected = ["<= 10000" if a else "one item per source instalment" for a in alloc]
+    details = [f"{t} {s} already covered by {k}; excluded from forecasts" if a else
+               f"{t} {s} instalment {int(n)} already forecast by {k} (same source and instalment)"
+               f"{'' if linked else '; item has no forecast_source_link row'}; excluded from forecasts"
+               for a, t, s, n, k, linked in zip(alloc, d["source_type"], d["source_id"], d["instalment_no"],
+                                                d["kept_cf_id"], d["linked"])]
+    severity = ["MEDIUM" if linked else "HIGH" for linked in d["linked"]]
+    return _frame("DUPLICATE_CASH_FLOW", "cash_flow_forecast", d["cf_id"], observed, expected, details, severity)
+
+
+REVISION_FIELDS = ["expected_date", "amount_minor", "currency", "basis_actual_id"]
+
+
+def unversioned_changes(cf: pd.DataFrame, revisions: pd.DataFrame) -> pd.DataFrame:
+    """Items whose current values equal none of their recorded revisions (or that have no revision)."""
+    key = lambda df: df[REVISION_FIELDS].astype(object).where(df[REVISION_FIELDS].notna(), "<NA>").astype(str).agg("|".join, axis=1)
+    known = set(zip(revisions["cf_id"], key(revisions)))
+    mask = [(c, k) not in known for c, k in zip(cf["cf_id"], key(cf))]
+    return cf[mask]
 
 
 def detect_cutoff_leakage(ds: Dataset) -> pd.DataFrame:
-    b = basis_leakage(ds["cash_flow_forecast"], ds["actual_cash_flow"])
-    return _frame("CUTOFF_LEAKAGE", "cash_flow_forecast", b["cf_id"],
-                  [f"basis {a} recorded {t}" for a, t in zip(b["basis_actual_id"], b["basis_recorded_at"])],
-                  [f"recorded before {k}" for k in b["known_at"]],
-                  ["forecast item uses an actual that was not available when the item was known"] * len(b))
+    cf, act = ds["cash_flow_forecast"], ds["actual_cash_flow"]
+    item = basis_leakage(cf, act)
+    rev = ds["cash_flow_forecast_revision"] if "cash_flow_forecast_revision" in ds else None
+    rows = {r.cf_id: (f"basis {r.basis_actual_id} recorded {r.basis_recorded_at}", f"recorded before {r.known_at}",
+                      "forecast item uses an actual that was not available when the item was known")
+            for r in item.itertuples(index=False)}
+    if rev is not None:
+        for r in basis_leakage(rev, act).itertuples(index=False):
+            rows.setdefault(r.cf_id, (f"revision {r.revision_id} basis {r.basis_actual_id} recorded {r.basis_recorded_at}",
+                                      f"recorded before {r.known_at}",
+                                      f"revision {r.revision_no} uses an actual that was not available when it was recorded"))
+    ids_ = sorted(rows)
+    out = [_frame("CUTOFF_LEAKAGE", "cash_flow_forecast", ids_, [rows[i][0] for i in ids_], [rows[i][1] for i in ids_],
+                  [rows[i][2] for i in ids_])]
+    if rev is not None:
+        u = unversioned_changes(cf, rev)
+        out.append(_frame("CUTOFF_LEAKAGE", "cash_flow_forecast", u["cf_id"],
+                          [f"current {d:%Y-%m-%d} / {a}" for d, a in zip(u["expected_date"], u["amount_minor"])],
+                          ["values recorded in cash_flow_forecast_revision"] * len(u),
+                          ["current values match no recorded revision: change cannot be dated (possible look-ahead); "
+                           "forecast runs use revisions only"] * len(u),
+                          severity=["MEDIUM"] * len(u), rule="CUT-003", decision="HELD_FOR_REVIEW"))
+    return pd.concat(out, ignore_index=True)
 
 
 def detect_mixed_currency(ds: Dataset) -> pd.DataFrame:
@@ -122,8 +202,11 @@ def detect_mixed_currency(ds: Dataset) -> pd.DataFrame:
                        ("receivable", "receivable_id"), ("payable", "payable_id")]:
         t = ds[table]
         bad = t[t["currency"].values != t["account_id"].map(acc_ccy).values]
+        note = ("currency differs from account currency; entry quarantined: excluded from balances, forecasts "
+                "and variance (statement difference shown as RECONCILING_ITEM)" if table == "ledger_entry"
+                else "currency differs from account currency")
         frames.append(_frame("MIXED_CURRENCY", table, bad[key], bad["currency"], bad["account_id"].map(acc_ccy),
-                             ["currency differs from account currency"] * len(bad)))
+                             [note] * len(bad)))
     return pd.concat(frames, ignore_index=True)
 
 

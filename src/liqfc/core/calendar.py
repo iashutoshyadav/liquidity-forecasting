@@ -36,6 +36,15 @@ class BusinessCalendar:
             out.append(np.busday_offset(last, 0, roll="backward", holidays=self.holidays))
         return out
 
+    def weekly_sweep_dates(self, start, end) -> list[pd.Timestamp]:
+        """Last business day of each Mon-Sun week, for weeks whose last business day is in [start, end]."""
+        lo = pd.Timestamp(start) - pd.Timedelta(days=7)
+        hi = pd.Timestamp(end) + pd.Timedelta(days=7)
+        days = pd.to_datetime(self.business_days(lo, hi))
+        week = days.to_period("W-SUN")
+        last = pd.Series(days, index=week).groupby(level=0).max()
+        return [d for d in last if pd.Timestamp(start) <= d <= pd.Timestamp(end)]
+
     def next_weekday_on_or_after(self, dates, weekday: int) -> np.ndarray:
         """First business day that falls on ``weekday`` (0=Mon) on/after each date; rolls past holidays."""
         d = self._d(dates)

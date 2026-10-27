@@ -27,13 +27,15 @@ def input_business_checks(t: dict[str, pd.DataFrame], settings, cal) -> list[Che
     led = t["ledger_entry"]
     st = t["account_balance_statement"].sort_values(["account_id", "statement_date"])
 
-    flows = led.groupby(["account_id", "value_date"])["amount_minor"].sum()
+    bl = t["bank_statement_line"]
+    flows = bl.groupby(["account_id", "booking_date"])["amount_minor"].sum()
+    flows.index.names = ["account_id", "statement_date"]
     s = st.set_index(["account_id", "statement_date"])
     moved = flows.reindex(s.index, fill_value=0)
     calc = s.index.get_level_values(0).map(acc.set_index("account_id")["opening_balance_minor"]).to_numpy(np.int64) + \
         moved.groupby(level=0).cumsum().to_numpy(np.int64)
     bad = calc != s["closing_balance_minor"].to_numpy(np.int64)
-    out.append(_st("Statement closing = opening balance + cumulative ledger", "BUS-REC", "account_balance_statement",
+    out.append(_st("Statement closing = opening balance + cumulative bank statement lines", "BUS-REC", "account_balance_statement",
                    len(s), [(i, o, c, "balance break") for i, o, c in zip(s.loc[bad, "statement_id"],
                                                                        s.loc[bad, "closing_balance_minor"], calc[bad])],
                    "BALANCE_MISMATCH", emit=False))
@@ -70,6 +72,29 @@ def input_business_checks(t: dict[str, pd.DataFrame], settings, cal) -> list[Che
                    [(f"{a}:{b}", v, "<=10000", "source over-allocated") for (a, b), v in over.items()],
                    "DUPLICATE_CASH_FLOW", emit=False))
 
+    cf_all = t["cash_flow_forecast"]
+    key = ["source_type", "source_id", "instalment_no"]
+    per_key = cf_all.groupby(key)["cf_id"].agg(["size", lambda s: ";".join(sorted(s))])
+    per_key.columns = ["n", "items"]
+    rep = per_key[per_key["n"] > 1]
+    out.append(_st("One forecast item per source instalment (no double counting)", "BUS-DUPITEM", "cash_flow_forecast",
+                   len(per_key), [(f"{a}:{b}#{c}", r.items, "1 item", "source instalment forecast more than once")
+                                  for (a, b, c), r in rep.iterrows()],
+                   "DUPLICATE_CASH_FLOW", emit=False))
+
+    lk = cf_all[["cf_id", "source_type", "source_id"]].merge(
+        links[["cf_id", "source_type", "source_id"]], on="cf_id", how="left", suffixes=("", "_link"))
+    missing = lk[lk["source_type_link"].isna()]
+    wrong = lk[lk["source_type_link"].notna() & ((lk["source_type"] != lk["source_type_link"]) |
+                                                (lk["source_id"] != lk["source_id_link"]))]
+    out.append(_st("Every forecast item has a source link to its own source", "BUS-CF-LINK", "cash_flow_forecast",
+                   len(cf_all),
+                   [(c, "no link", f"{a}:{b}", "forecast item has no forecast_source_link row")
+                    for c, a, b in zip(missing["cf_id"], missing["source_type"], missing["source_id"])] +
+                   [(c, f"{la}:{lb}", f"{a}:{b}", "forecast_source_link points to a different source")
+                    for c, a, b, la, lb in zip(wrong["cf_id"], wrong["source_type"], wrong["source_id"],
+                                               wrong["source_type_link"], wrong["source_id_link"])]))
+
     cf = t["cash_flow_forecast"]
     act = t["actual_cash_flow"].set_index("actual_id")
     b = cf[cf["basis_actual_id"].notna()]
@@ -78,6 +103,30 @@ def input_business_checks(t: dict[str, pd.DataFrame], settings, cal) -> list[Che
     out.append(_st("Forecast item basis recorded before item known", "BUS-CUT-ITEM", "cash_flow_forecast", len(b),
                    [(i, r, k, "basis after known_at") for i, r, k in zip(b.loc[bad, "cf_id"], rec[bad], b.loc[bad, "known_at"])],
                    "CUTOFF_LEAKAGE", emit=False))
+
+    rv = t["cash_flow_forecast_revision"].sort_values(["cf_id", "revision_no"], kind="mergesort")
+    fails = []
+    nos = rv.groupby("cf_id")["revision_no"].apply(list)
+    fails += [(c, n, "1..k", "revision numbers not contiguous from 1") for c, n in nos.items() if n != list(range(1, len(n) + 1))]
+    mono = rv.groupby("cf_id")["known_at"].apply(lambda x: x.is_monotonic_increasing and x.is_unique)
+    fails += [(c, "", "increasing", "revision known_at not strictly increasing") for c, ok in mono.items() if not ok]
+    first = rv.drop_duplicates("cf_id").set_index("cf_id")["known_at"]
+    k1 = cf["cf_id"].map(first)
+    fails += [(c, a, b_, "revision 1 not known when the item became known") for c, a, b_ in
+              zip(cf.loc[k1 != cf["known_at"], "cf_id"], k1[k1 != cf["known_at"]], cf.loc[k1 != cf["known_at"], "known_at"])]
+    rbasis = rv[rv["basis_actual_id"].notna()]
+    rrec = rbasis["basis_actual_id"].map(act["recorded_at"])
+    rbad = rrec.isna() | (rrec >= rbasis["known_at"])
+    fails += [(r, c, "basis before revision known", "revision uses later information")
+              for r, c in zip(rbasis.loc[rbad, "revision_id"], rbasis.loc[rbad, "cf_id"])]
+    key = lambda df: df[["expected_date", "amount_minor", "currency", "basis_actual_id"]].astype(object).where(
+        df[["expected_date", "amount_minor", "currency", "basis_actual_id"]].notna(), "<NA>").astype(str).agg("|".join, axis=1)
+    latest = rv.drop_duplicates("cf_id", keep="last")
+    lk = dict(zip(latest["cf_id"], key(latest)))
+    fails += [(c, "", "latest revision", "current values differ from latest revision")
+              for c, k in zip(cf["cf_id"], key(cf)) if lk.get(c) != k]
+    out.append(_st("Forecast item revision history is append-only and consistent", "BUS-REV",
+                   "cash_flow_forecast_revision", len(rv), fails, "CUTOFF_LEAKAGE", emit=False))
 
     l = led.set_index("ledger_entry_id")
     a = t["actual_cash_flow"]
@@ -113,6 +162,26 @@ def input_business_checks(t: dict[str, pd.DataFrame], settings, cal) -> list[Che
     late = led[led["account_id"].isin(dorm.index) & (led["value_date"] >= led["account_id"].map(dorm))]
     out.append(_st("No ledger activity on dormant accounts", "BUS-DORMANT", "ledger_entry", len(led),
                    [(i, "", "", "activity after dormancy") for i in late["ledger_entry_id"]]))
+
+    pool = acc[acc["sweep_parent_account_id"].notna()]
+    hdr = acc.set_index("account_id")
+    fails = []
+    for r in pool.itertuples(index=False):
+        p = r.sweep_parent_account_id
+        if p not in hdr.index or hdr.at[p, "account_type"] != "OPERATING" or hdr.at[p, "entity_id"] != r.entity_id                 or hdr.at[p, "currency"] != r.currency:
+            fails.append((r.account_id, p, "OPERATING account of same entity and currency", "invalid pool header"))
+        if pd.isna(r.sweep_target_minor) or int(r.sweep_target_minor) <= 0:
+            fails.append((r.account_id, r.sweep_target_minor, "> 0", "pooled account without positive target"))
+    unpooled_target = acc[acc["sweep_parent_account_id"].isna() & acc["sweep_target_minor"].notna()]
+    fails += [(a_, "", "null", "target set on unpooled account") for a_ in unpooled_target["account_id"]]
+    sw = led[led["entry_type"].isin(["INTERNAL_TRANSFER_IN", "INTERNAL_TRANSFER_OUT"])]
+    pool_of = pool.set_index("account_id")["sweep_parent_account_id"].to_dict()
+    pool_of.update({h: h for h in pool["sweep_parent_account_id"]})
+    sw = sw.assign(pool=sw["account_id"].map(pool_of))
+    fails += [(i, a_, "pooled account", "sweep entry outside a cash pool") for i, a_ in zip(sw.loc[sw["pool"].isna(), "ledger_entry_id"], sw.loc[sw["pool"].isna(), "account_id"])]
+    net = sw.groupby(["pool", "value_date"])["amount_minor"].sum()
+    fails += [(f"{k[0]}|{k[1]:%Y-%m-%d}", v, 0, "sweeps do not net to zero within the pool") for k, v in net[net != 0].items()]
+    out.append(_st("Cash-pool structure and sweeps net to zero", "BUS-POOL", "bank_account", len(pool) + len(sw), fails))
     return out
 
 
@@ -162,12 +231,16 @@ def derived_checks(t: dict[str, pd.DataFrame], d: dict[str, pd.DataFrame], setti
     inc["cutoff"] = inc["forecast_run_id"].map(runs["cutoff_ts"])
     cf_known = t["cash_flow_forecast"].set_index("cf_id")["known_at"]
     act_rec = t["actual_cash_flow"].set_index("actual_id")["recorded_at"]
-    basis_ts = inc["basis_record_id"].map(act_rec).fillna(inc["basis_record_id"].map(cf_known))
+    rev_known = t["cash_flow_forecast_revision"].set_index("revision_id")["known_at"]
+    basis_ts = inc["basis_record_id"].map(act_rec).fillna(inc["basis_record_id"].map(rev_known))
+    rev_ok = inc["revision_id"].isna() | (inc["revision_id"].map(rev_known) < inc["cutoff"])
     known = inc["cf_id"].map(cf_known)
-    bad = (inc["source_type"] != "SCENARIO") & ((basis_ts >= inc["cutoff"]) | (known >= inc["cutoff"]) | basis_ts.isna())
+    derived_line = inc["source_type"].isin(["SCENARIO", "SWEEP"])
+    bad = ~derived_line & ((basis_ts >= inc["cutoff"]) | (known >= inc["cutoff"]) | basis_ts.isna() | ~rev_ok)
     fails = [(l, "", "", "line uses information recorded after cutoff") for l in inc.loc[bad, "line_id"]]
     ra = d["forecast_run_account"]
     led = t["ledger_entry"]
+    led = led[led["currency"].values == led["account_id"].map(t["bank_account"].set_index("account_id")["currency"]).values]
     for rid, g in ra.groupby("forecast_run_id"):
         cut = runs.at[rid, "cutoff_ts"]
         exp = led[led["recorded_at"] < cut].groupby("account_id")["amount_minor"].sum()
@@ -214,6 +287,47 @@ def derived_checks(t: dict[str, pd.DataFrame], d: dict[str, pd.DataFrame], setti
             elif runs.at[r["supersedes_run_id"], "run_status"] != "SUPERSEDED":
                 fails.append((r["supersedes_run_id"], runs.at[r["supersedes_run_id"], "run_status"], "SUPERSEDED", "not superseded"))
     out.append(_st("Forecast versions immutable and history preserved", "BUS-RUN-HIST", "forecast_run", len(runs), fails))
+
+    p_ = d["daily_cash_position"]
+    unexplained = p_["reconciliation_difference_minor"].fillna(0) != p_["explained_difference_minor"].fillna(0)
+    status_bad = (p_["reconciliation_status"] == "BREAK") != unexplained
+    out.append(_st("Statement vs ledger differences are explained by reconciling items", "BUS-RECON", "daily_cash_position",
+                   len(p_), [(f"{a}|{x:%Y-%m-%d}", df_, ex, "unexplained statement difference")
+                             for a, x, df_, ex in zip(p_.loc[unexplained, "account_id"], p_.loc[unexplained, "position_date"],
+                                                      p_.loc[unexplained, "reconciliation_difference_minor"],
+                                                      p_.loc[unexplained, "explained_difference_minor"])] +
+                   [(f"{a}|{x:%Y-%m-%d}", "", "", "status inconsistent with explained difference")
+                    for a, x in zip(p_.loc[status_bad, "account_id"], p_.loc[status_bad, "position_date"])],
+                   "BALANCE_MISMATCH", emit=False))
+
+    it = d["bank_reconciliation_item"]
+    acc_ccy = t["bank_account"].set_index("account_id")["currency"]
+    led_v = t["ledger_entry"][t["ledger_entry"]["currency"].values == t["ledger_entry"]["account_id"].map(acc_ccy).values]
+    fails = []
+    lc = it["ledger_entry_id"].dropna().value_counts()
+    bc = it["bank_line_id"].dropna().value_counts()
+    fails += [(i, "missing", "1 item", "ledger entry not reconciled") for i in sorted(set(led_v["ledger_entry_id"]) - set(lc.index))]
+    fails += [(i, "missing", "1 item", "bank line not reconciled") for i in sorted(set(t["bank_statement_line"]["bank_line_id"]) - set(bc.index))]
+    fails += [(i, n, 1, "ledger entry in several items") for i, n in lc[lc > 1].items()]
+    fails += [(i, n, 1, "bank line in several items") for i, n in bc[bc > 1].items()]
+    pairs = it[it["match_status"].isin(["MATCHED", "TIMING_DIFFERENCE"])]
+    lmap = t["ledger_entry"].set_index("ledger_entry_id")
+    bmap = t["bank_statement_line"].set_index("bank_line_id")
+    wrong = pairs[(pairs["ledger_entry_id"].map(lmap["amount_minor"]) != pairs["bank_line_id"].map(bmap["amount_minor"]))
+                  | (pairs["ledger_entry_id"].map(lmap["account_id"]) != pairs["bank_line_id"].map(bmap["account_id"]))
+                  | (pairs["bank_line_id"].map(bmap["booking_date"]) < pairs["ledger_entry_id"].map(lmap["value_date"]))]
+    fails += [(i, "", "same account and amount, bank not earlier", "invalid match") for i in wrong["recon_item_id"]]
+    out.append(_st("Every ledger entry and bank line reconciled exactly once", "BUS-RECON-ITEMS",
+                   "bank_reconciliation_item", len(it), fails))
+
+    pool = t["bank_account"][t["bank_account"]["sweep_parent_account_id"].notna()].set_index("account_id")["sweep_target_minor"]
+    sweep_days = set(t["ledger_entry"].loc[t["ledger_entry"]["entry_type"].isin(["INTERNAL_TRANSFER_IN", "INTERNAL_TRANSFER_OUT"]), "value_date"])
+    pp = d["daily_cash_position"]
+    pp = pp[pp["account_id"].isin(pool.index) & pp["position_date"].isin(sweep_days)]
+    off = pp[pp["closing_balance_minor"].to_numpy() != pp["account_id"].map(pool).astype("int64").to_numpy()]
+    out.append(_st("Pooled accounts close at target on sweep days", "BUS-POOL-POS", "daily_cash_position", len(pp),
+                   [(f"{a_}|{x:%Y-%m-%d}", c, pool[a_], "pooled closing differs from target")
+                    for a_, x, c in zip(off["account_id"], off["position_date"], off["closing_balance_minor"])]))
     return out
 
 
@@ -254,7 +368,7 @@ def scenario_check(t, d, settings, cal) -> CheckResult:
                         or s["exclusion_reason"] != b["exclusion_reason"] and not (pd.isna(s["exclusion_reason"]) and pd.isna(b["exclusion_reason"]))):
                     fails.append((f"{r.forecast_run_id}|{cid}", f"{s['adjusted_date']:%Y-%m-%d}/{s['adjusted_amount_minor']}",
                                   f"{exp_date:%Y-%m-%d}/{exp_amt}", "undocumented scenario difference"))
-            extra = sl[sl["cf_id"].isna()]
+            extra = sl[sl["source_type"] == "SCENARIO"]
             want = 1 if p["one_off_payment"] else 0
             if len(extra) != want:
                 fails.append((r.forecast_run_id, len(extra), want, "scenario-only line count"))

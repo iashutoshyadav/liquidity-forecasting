@@ -4,6 +4,7 @@
 erDiagram
     LEGAL_ENTITY ||--o{ LEGAL_ENTITY : "parent (0..1)"
     LEGAL_ENTITY ||--|{ BANK_ACCOUNT : owns
+    BANK_ACCOUNT |o--o{ BANK_ACCOUNT : "cash-pool header (0..1)"
     BANK_ACCOUNT ||--|{ ACCOUNT_STATUS_EVENT : history
     BANK_ACCOUNT ||--o{ LEDGER_ENTRY : posts
     BANK_ACCOUNT ||--|{ ACCOUNT_BALANCE_STATEMENT : "daily statement"
@@ -20,6 +21,11 @@ erDiagram
     CASH_FLOW_FORECAST ||--o{ ACTUAL_CASH_FLOW : "settled by"
     LEDGER_ENTRY ||--o| ACTUAL_CASH_FLOW : "1:1 for settlements"
     ACTUAL_CASH_FLOW |o--o{ CASH_FLOW_FORECAST : "basis of estimate (0..1)"
+    CASH_FLOW_FORECAST ||--|{ CASH_FLOW_FORECAST_REVISION : "version history (append-only)"
+    CASH_FLOW_FORECAST_REVISION |o--o{ FORECAST_RUN_LINE : "version used"
+    BANK_ACCOUNT ||--o{ BANK_STATEMENT_LINE : "bank feed"
+    LEDGER_ENTRY |o--o| BANK_RECONCILIATION_ITEM : "matched by"
+    BANK_STATEMENT_LINE |o--o| BANK_RECONCILIATION_ITEM : "matched by"
     LIQUIDITY_SCENARIO ||--|{ SCENARIO_ASSUMPTION : documents
     LIQUIDITY_SCENARIO ||--o{ FORECAST_RUN : "applied in"
     FORECAST_RUN |o--o| FORECAST_RUN : supersedes
@@ -47,6 +53,7 @@ orphaned reference.
 |---|---|---|---|
 | LegalEntity → LegalEntity (parent) | N:1 | yes (group parent has none) | `parent_entity_id` |
 | LegalEntity → BankAccount | 1:N (3–8) | no | every entity has OPERATING, COLLECTION, DISBURSEMENT |
+| BankAccount → BankAccount (cash pool) | N:1 | yes | `sweep_parent_account_id`: pooled COLLECTION/DISBURSEMENT account → OPERATING account of the same entity and currency; weekly sweep to `sweep_target_minor` |
 | BankAccount → LedgerEntry | 1:N | dormant accounts stop after dormancy | currency must equal account currency |
 | BankAccount → AccountBalanceStatement | 1:N (one per calendar day) | no | unique (account_id, statement_date) |
 | Receivable / Payable → BankAccount, LegalEntity | N:1 | no | account must belong to the same entity |
@@ -55,6 +62,10 @@ orphaned reference.
 | CashFlowForecast → ActualCashFlow | 1:N | yes (open items) | partial payments give 2 actuals |
 | LedgerEntry → ActualCashFlow | 1:0..1 | yes | only settlement entries |
 | ActualCashFlow → CashFlowForecast (basis) | 1:N | yes | payroll estimate = previous month's actual |
+| CashFlowForecast → CashFlowForecastRevision | 1:N (≥1) | no | append-only versions; unique (cf_id, revision_no); `known_at` strictly increasing |
+| CashFlowForecastRevision → ForecastRunLine | 1:N | yes | the version a run used (latest known before cutoff) |
+| BankAccount → BankStatementLine | 1:N | no | the bank's own feed; statements are built from it |
+| LedgerEntry / BankStatementLine → BankReconciliationItem | 1:1 each | yes (one side null for unmatched items) | every ledger entry and bank line appears in exactly one item |
 | LiquidityScenario → ScenarioAssumption | 1:N (5) | no | the only allowed scenario differences |
 | LiquidityScenario → ForecastRun | 1:N | no | |
 | ForecastRun → ForecastRun (supersedes) | 1:0..1 | yes | re-runs |

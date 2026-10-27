@@ -1,16 +1,23 @@
 """Versioned forecast runs with strict historical cutoff.
 
 FC-01 cutoff_ts = cutoff_date 00:00Z. Only records with recorded_at/known_at < cutoff_ts are used.
-FC-02 opening balance = account opening + sum(ledger entries recorded before cutoff).
+FC-02 opening balance = account opening + sum(ledger entries recorded before cutoff), excluding
+      entries quarantined for being in the wrong currency (BAL-02).
 FC-03 candidate items: known before cutoff, not cancelled/written off before cutoff, remaining
       amount = amount - settlements recorded before cutoff (payroll: any settlement closes it).
 FC-04 overdue unsettled items are re-dated: receivables cutoff + overdue_receivable_roll_days,
       payables cutoff + overdue_payable_roll_days (next business day).
 FC-05 guards (excluded, logged): CUTOFF_LEAKAGE (basis recorded >= cutoff), MIXED_CURRENCY
-      (item currency != account currency), DUPLICATE_CASH_FLOW (source allocation > 100%).
+      (item currency != account currency), DUPLICATE_CASH_FLOW (source allocation > 100% or a
+      second item for the same source instalment, with or without a source link). Duplicates are
+      judged against every item known before cutoff, including items already settled, and the
+      item holding settlements recorded before cutoff is kept.
 FC-06 scenario transformation = engine/scenarios.apply_scenario (documented assumptions only).
 FC-07 FX: last rate published before cutoff (effective for cutoff-1 day) x (1 + shock_bp/10000).
 FC-08 a re-run creates a new run id (next sequence for the cutoff) and supersedes the old one.
+FC-10 cash-pool sweeps are projected with the same weekly rule as the actual sweeps (sweep_lines).
+FC-11 item values (expected date, amount, currency, basis) come from the latest revision known before
+      cutoff (items_as_of); later revisions cannot change an earlier run.
 """
 from __future__ import annotations
 
@@ -22,7 +29,8 @@ import pandas as pd
 from liqfc.core import ids, money
 from liqfc.core.dataset import Dataset
 from liqfc.core.enums import SCENARIO_CODES
-from liqfc.engine.anomaly_detection import basis_leakage, currency_mismatch, duplicate_excess
+from liqfc.engine.anomaly_detection import basis_leakage, currency_mismatch, duplicate_items
+from liqfc.engine.balances import split_ledger_by_currency
 from liqfc.engine.fx_conversion import FxLookup, convert_to_reporting, rate_text
 from liqfc.engine.scenarios import apply_scenario, fx_shock_bp, one_off_line
 
@@ -60,11 +68,28 @@ def plan_runs(settings) -> list[RunSpec]:
     return specs
 
 
+VALUE_FIELDS = ["expected_date", "amount_minor", "currency", "basis_actual_id"]
+
+
+def items_as_of(cf: pd.DataFrame, revisions: pd.DataFrame, ts: pd.Timestamp) -> pd.DataFrame:
+    """FC-11: each item as it was known strictly before ``ts`` (latest revision with known_at < ts).
+
+    Static fields (account, source, category, status) come from the item; value fields come from the
+    revision. Items with no revision known before ``ts`` are not visible. Adds revision_id and
+    revision_known_at.
+    """
+    r = revisions[revisions["known_at"] < ts].sort_values(["cf_id", "revision_no"], kind="mergesort")
+    r = r.drop_duplicates("cf_id", keep="last")
+    r = r[["cf_id", "revision_id", "known_at"] + VALUE_FIELDS].rename(columns={"known_at": "revision_known_at"})
+    return cf.drop(columns=VALUE_FIELDS).merge(r, on="cf_id", how="inner")
+
+
 def candidate_lines(ds: Dataset, settings, cal, cutoff: pd.Timestamp) -> pd.DataFrame:
     ts = pd.Timestamp(cutoff)
     fc = settings.forecast
     cf = ds["cash_flow_forecast"]
-    known = cf[cf["known_at"] < ts]
+    visible = items_as_of(cf, ds["cash_flow_forecast_revision"], ts)
+    known = visible
     pse, rse = ds["payable_status_event"], ds["receivable_status_event"]
     closed = set(pse.loc[(pse["to_status"] == "CANCELLED") & (pse["recorded_at"] < ts), "payable_id"]) | \
         set(rse.loc[(rse["to_status"] == "WRITTEN_OFF") & (rse["recorded_at"] < ts), "receivable_id"])
@@ -87,7 +112,9 @@ def candidate_lines(ds: Dataset, settings, cal, cutoff: pd.Timestamp) -> pd.Data
     lines = known[known["base_date"] <= window_end].copy()
 
     reason = pd.Series(None, index=lines.index, dtype=object)
-    dup = set(duplicate_excess(known, ds["forecast_source_link"][ds["forecast_source_link"]["cf_id"].isin(known["cf_id"])])["cf_id"])
+    links = ds["forecast_source_link"]
+    settled_by_cutoff = set(act.loc[act["recorded_at"] < ts, "cf_id"])
+    dup = set(duplicate_items(visible, links[links["cf_id"].isin(visible["cf_id"])], settled_by_cutoff)["cf_id"])
     mixed = set(currency_mismatch(lines, ds["bank_account"])["cf_id"])
     leak = set(basis_leakage(lines, act, ts)["cf_id"])
     reason[lines["cf_id"].isin(dup)] = "DUPLICATE_CASH_FLOW"
@@ -96,22 +123,62 @@ def candidate_lines(ds: Dataset, settings, cal, cutoff: pd.Timestamp) -> pd.Data
     lines["exclusion_reason"] = reason
 
     basis_ts = lines["basis_actual_id"].map(act.set_index("actual_id")["recorded_at"])
-    lines["basis_record_id"] = lines["basis_actual_id"].where(lines["basis_actual_id"].notna(), lines["cf_id"])
-    lines["basis_recorded_at"] = basis_ts.where(lines["basis_actual_id"].notna(), lines["known_at"])
+    lines["basis_record_id"] = lines["basis_actual_id"].where(lines["basis_actual_id"].notna(), lines["revision_id"])
+    lines["basis_recorded_at"] = basis_ts.where(lines["basis_actual_id"].notna(), lines["revision_known_at"])
     lines["base_amount_minor"] = lines["remaining"].astype(np.int64)
-    return lines[["cf_id", "account_id", "source_type", "source_id", "currency", "flow_category", "base_date",
+    return lines[["cf_id", "revision_id", "account_id", "source_type", "source_id", "currency", "flow_category", "base_date",
                   "base_amount_minor", "settled_before_cutoff_minor", "basis_record_id", "basis_recorded_at",
                   "exclusion_reason", "known_at"]].reset_index(drop=True)
 
 
 def opening_balances(ds: Dataset, cutoff: pd.Timestamp) -> pd.DataFrame:
-    led = ds["ledger_entry"]
+    led, _ = split_ledger_by_currency(ds["ledger_entry"], ds["bank_account"])
     known = led[led["recorded_at"] < pd.Timestamp(cutoff)]
     agg = known.groupby("account_id")["amount_minor"].agg(["sum", "size"])
     acc = ds["bank_account"][["account_id", "currency", "entity_id", "opening_balance_minor"]].copy()
     acc["opening_balance_minor"] = acc["opening_balance_minor"].astype(np.int64) + acc["account_id"].map(agg["sum"]).fillna(0).astype(np.int64)
     acc["known_entry_count"] = acc["account_id"].map(agg["size"]).fillna(0).astype(np.int64)
     return acc
+
+
+def sweep_lines(accounts: pd.DataFrame, opening: pd.DataFrame, lines: pd.DataFrame, cal, ts: pd.Timestamp,
+                window_end: pd.Timestamp) -> pd.DataFrame:
+    """FC-10: project the weekly cash-pool sweeps (LED-07) on forecast balances.
+
+    On each sweep date in the window a pooled account's projected balance (known opening + included
+    lines + earlier projected sweeps) is returned to its target; the difference moves to its parent.
+    Uses only the opening balance known at cutoff and the run's own lines.
+    """
+    pool = accounts[accounts["sweep_parent_account_id"].notna()]
+    dates = cal.weekly_sweep_dates(ts, window_end)
+    if pool.empty or not dates:
+        return pd.DataFrame()
+    inc = lines[lines["line_status"] == "INCLUDED"]
+    daily = inc.groupby(["account_id", "adjusted_date"])["adjusted_amount_minor"].sum()
+    open_bal = opening.set_index("account_id")["opening_balance_minor"]
+    rows = []
+    for r in pool.sort_values("account_id").itertuples(index=False):
+        if r.account_id in daily.index.get_level_values(0):
+            flows = daily.xs(r.account_id)
+        else:
+            flows = pd.Series(dtype=np.int64, index=pd.DatetimeIndex([]))
+        bal, prev = int(open_bal[r.account_id]), ts - pd.Timedelta(days=1)
+        for d in dates:
+            bal += int(flows[(flows.index > prev) & (flows.index <= d)].sum())
+            x = bal - int(r.sweep_target_minor)
+            prev = d
+            if x == 0:
+                continue
+            bal -= x
+            sid = f"SWEEP-{r.account_id}-{d:%Y%m%d}"
+            for acct, amt in ((r.account_id, -x), (r.sweep_parent_account_id, x)):
+                rows.append({"cf_id": None, "revision_id": None, "account_id": acct, "source_type": "SWEEP", "source_id": sid,
+                             "currency": r.currency, "flow_category": "INTERNAL_TRANSFER", "base_date": d,
+                             "base_amount_minor": amt, "adjusted_date": d, "adjusted_amount_minor": amt,
+                             "settled_before_cutoff_minor": 0, "assumption_ids": None, "basis_record_id": r.account_id,
+                             "basis_recorded_at": ts - pd.Timedelta(seconds=1), "line_status": "INCLUDED",
+                             "exclusion_reason": None, "known_at": ts - pd.Timedelta(seconds=1)})
+    return pd.DataFrame(rows)
 
 
 def execute_run(ds: Dataset, settings, cal, fx: FxLookup, spec: RunSpec, cand: pd.DataFrame,
@@ -129,6 +196,9 @@ def execute_run(ds: Dataset, settings, cal, fx: FxLookup, spec: RunSpec, cand: p
     extra = one_off_line(settings, spec.code, ts, ds["bank_account"], fx, cal)
     if extra:
         lines = pd.concat([lines, pd.DataFrame([extra])], ignore_index=True)
+    sweeps = sweep_lines(ds["bank_account"], opening, lines, cal, ts, window_end)
+    if len(sweeps):
+        lines = pd.concat([lines, sweeps], ignore_index=True)
     lines["forecast_run_id"] = spec.run_id
     lines = lines.sort_values(["account_id", "adjusted_date", "source_type", "source_id", "cf_id"],
                               kind="mergesort", na_position="first").reset_index(drop=True)

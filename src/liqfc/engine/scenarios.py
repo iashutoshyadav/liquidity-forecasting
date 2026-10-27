@@ -104,7 +104,7 @@ def one_off_line(settings: Settings, code: str, cutoff: pd.Timestamp, accounts: 
     mu = settings.minor_units
     local = money.convert_inverse(int(p["amount_reporting_minor"]), mu[settings.reporting_currency], rate, mu[a["currency"]])
     d = pd.Timestamp(cal.roll_forward([cutoff + pd.Timedelta(days=int(p["offset_days"]))])[0])
-    return {"cf_id": None, "account_id": a["account_id"], "source_type": "SCENARIO", "source_id": asm(code, 5),
+    return {"cf_id": None, "revision_id": None, "account_id": a["account_id"], "source_type": "SCENARIO", "source_id": asm(code, 5),
             "currency": a["currency"], "flow_category": "ONE_OFF_PAYMENT", "base_date": d, "base_amount_minor": -local,
             "adjusted_date": d, "adjusted_amount_minor": -local, "settled_before_cutoff_minor": 0,
             "assumption_ids": asm(code, 5), "basis_record_id": asm(code, 5),

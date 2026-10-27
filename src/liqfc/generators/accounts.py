@@ -106,6 +106,16 @@ def generate_accounts(ctx: GenContext, entities: pd.DataFrame) -> tuple[pd.DataF
         if i in dormant_date:
             events.append((r["account_id"], "ACTIVE", "DORMANT", dormant_date[i], "No activity expected; account set dormant"))
             acc.loc[i, "status"] = "DORMANT"
+    pooled_types = set(cfg["cash_pool"]["pooled_types"])
+    header = acc[acc["account_type"] == "OPERATING"].set_index("entity_id")
+    parent = []
+    for r in acc.itertuples(index=False):
+        h = header.loc[r.entity_id]
+        pooled = r.account_type in pooled_types and r.currency == h["currency"] and r.status == "ACTIVE"
+        parent.append(h["account_id"] if pooled else None)
+    acc["sweep_parent_account_id"] = parent
+    acc["sweep_target_minor"] = pd.array([None] * len(acc), dtype="Int64")
+
     ev = pd.DataFrame(events, columns=["account_id", "from_status", "to_status", "event_date", "reason"])
     ev = ev.sort_values(["event_date", "account_id"], kind="mergesort").reset_index(drop=True)
     ev.insert(0, "event_id", ids.seq_ids("ASE", s.id_year, len(ev)))

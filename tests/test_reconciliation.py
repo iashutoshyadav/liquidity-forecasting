@@ -6,8 +6,11 @@ from liqfc.engine.balances import account_daily_balances
 
 def test_clean_baseline_reconciles(base_result):
     pos = base_result.derived["daily_cash_position"]
-    assert (pos["reconciliation_status"] == "RECONCILED").all()
-    assert (pos["reconciliation_difference_minor"] == 0).all()
+    assert (pos["reconciliation_status"] != "BREAK").all()
+    assert (pos["reconciliation_difference_minor"] == pos["explained_difference_minor"]).all()
+    zero = pos["reconciliation_difference_minor"] == 0
+    assert (pos.loc[zero, "reconciliation_status"] == "RECONCILED").all()
+    assert (pos.loc[~zero, "reconciliation_status"] == "RECONCILING_ITEM").all() and (~zero).any()
 
 
 def test_balance_equation_and_continuity(base_result):
@@ -26,16 +29,13 @@ def test_balance_hand_calculation():
     assert b.loc["2026-01-02", "credits_minor"] == 500 and b.loc["2026-01-02", "debits_minor"] == 200
 
 
-def test_mixed_currency_ledger_is_refused():
+def test_mixed_currency_ledger_is_never_summed():
     acc = pd.DataFrame({"account_id": ["A"], "currency": ["USD"], "entity_id": ["E"], "opening_balance_minor": [0]})
-    led = pd.DataFrame({"account_id": ["A"], "currency": ["EUR"], "amount_minor": [5],
-                        "value_date": pd.to_datetime(["2026-01-02"])})
-    try:
-        account_daily_balances(acc, led, "2026-01-01", "2026-01-03")
-    except ValueError as e:
-        assert "currency" in str(e)
-    else:
-        raise AssertionError("mixed-currency ledger must be refused")
+    led = pd.DataFrame({"account_id": ["A", "A"], "currency": ["EUR", "USD"], "amount_minor": [5, 7],
+                        "value_date": pd.to_datetime(["2026-01-02", "2026-01-02"])})
+    b = account_daily_balances(acc, led, "2026-01-01", "2026-01-03").set_index("position_date")
+    assert list(b["closing_balance_minor"]) == [0, 7, 7]
+    assert b.loc["2026-01-02", "credits_minor"] == 7 and b.loc["2026-01-02", "entry_count"] == 1
 
 
 def test_consolidation_sums(base_result):

@@ -44,6 +44,11 @@ def test_injectors_only_touch_targets(baseline, injected):
         allowed_added = targets | set(gt.loc[gt["issue_type"] == "DUPLICATE_CASH_FLOW", "injected_value"])
         if name == "forecast_source_link":
             assert set(b.loc[list(added), "cf_id"]) <= allowed_added
+        elif name == "cash_flow_forecast_revision":
+            assert set(b.loc[list(added), "cf_id"]) <= allowed_added
+            assert set(b.loc[list(changed), "cf_id"]) <= targets, (name, list(changed)[:5])
+            assert not removed, name
+            continue
         else:
             assert added <= allowed_added, name
         assert removed <= targets, name
