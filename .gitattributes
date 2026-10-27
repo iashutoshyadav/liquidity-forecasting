@@ -1,0 +1,4 @@
+# Keep LF everywhere: pinned data files are verified by SHA-256 and outputs are byte-reproducible.
+* text=auto eol=lf
+*.csv text eol=lf
+*.json text eol=lf

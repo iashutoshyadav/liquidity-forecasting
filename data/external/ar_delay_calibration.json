@@ -1,0 +1,56 @@
+{
+  "method": "customers with >=20 invoices segmented by median delay (A <=2d, B 3-10d, C >10d); per segment: trim 1%/99% tails, shift = floor(p05), method-of-moments gamma on (delay - shift)",
+  "fields_used": [
+    "Customer_Name",
+    "Days_Overdue_Delay"
+  ],
+  "fields_discarded": "all other 27 columns (amounts, regions, cities, zip codes, dates, payment methods, flags)",
+  "overall": {
+    "invoices": 45839,
+    "early_share": 0.343441,
+    "on_due_share": 0.126464,
+    "late_share": 0.530094,
+    "p50": 1.0,
+    "p90": 6.0,
+    "p99": 42.0
+  },
+  "segments": {
+    "A": {
+      "customers": 62,
+      "invoices": 42078,
+      "invoice_share": 0.9225,
+      "observed": {
+        "mean": 0.455,
+        "p10": -4.0,
+        "p50": 1.0,
+        "p90": 5.0,
+        "early_share": 0.357574
+      },
+      "fitted_delay_gamma": {
+        "shape": 1.0889,
+        "scale": 4.429,
+        "shift": -4
+      }
+    },
+    "B": {
+      "customers": 14,
+      "invoices": 3535,
+      "invoice_share": 0.0775,
+      "observed": {
+        "mean": 6.8608,
+        "p10": -2.0,
+        "p50": 3.0,
+        "p90": 9.0,
+        "early_share": 0.179066
+      },
+      "fitted_delay_gamma": {
+        "shape": 0.3871,
+        "scale": 18.9351,
+        "shift": -2
+      }
+    }
+  },
+  "segments_absent": [
+    "C"
+  ]
+}

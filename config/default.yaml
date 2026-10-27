@@ -1,0 +1,131 @@
+# Master configuration. Dates are quoted strings so hashing is stable.
+project:
+  name: liquidity-forecasting
+  generator_version: "1.0.0"
+  calculation_version: "1.0.0"
+
+seed: 20261022
+id_year: 2026                       # year segment used in LED-/CF-/RCV-/... identifiers
+generation_timestamp: "2026-07-01T06:00:00Z"   # fixed; never wall-clock time
+
+reporting_currency: USD
+currencies:                         # minor units = decimal places of the currency
+  USD: {minor_units: 2}
+  EUR: {minor_units: 2}
+  GBP: {minor_units: 2}
+  INR: {minor_units: 2}
+  JPY: {minor_units: 0}
+
+money:
+  representation: "signed integer minor units (cents, paise, yen)"
+  rounding: ROUND_HALF_EVEN
+  rate_decimals: 8
+  variance_rounding_tolerance_minor: 6   # max |residual| of reporting-currency attribution
+
+external_data:                       # hybrid mode = synthetic core + these pinned public datasets
+  fx_source: kaggle                  # kaggle | synthetic (GBM random walk below)
+  fx_file: data/external/fx_rates_kaggle_v1091.csv
+  receivable_delay_profile: calibrated   # calibrated | synthetic (generation.receivable.delay_gamma)
+  calibration_file: data/external/ar_delay_calibration.json
+  calibrated_class_c_weight: 0.10    # class C is absent from the calibration data: kept as a stress segment
+  sources_file: data/external/SOURCES.json
+
+calendar:
+  start_date: "2026-01-01"
+  end_date: "2026-06-30"
+  weekend: [Sat, Sun]
+  holidays: ["2026-01-01", "2026-04-03", "2026-05-25"]
+  invoice_window_start: "2025-12-10"
+  invoice_window_end: "2026-06-20"
+
+fx:
+  quotation: "1 unit of base_currency = rate units of quote_currency; quote is always the reporting currency"
+  initial_rates: {EUR: "1.08000000", GBP: "1.27000000", INR: "0.01200000", JPY: "0.00670000"}
+  annual_volatility: {EUR: 0.07, GBP: 0.08, INR: 0.05, JPY: 0.10}
+  shocks:
+    - {date: "2026-03-16", currency: INR, pct: "-4.0", reason: "Synthetic emerging-market sell-off"}
+    - {date: "2026-05-11", currency: JPY, pct: "3.5", reason: "Synthetic policy surprise"}
+  max_fallback_business_days: 5      # stale-rate fallback window for a missing business-day rate
+
+generation:
+  entity:
+    monthly_revenue_median_reporting: 2000000
+    monthly_revenue_sigma: 0.7
+    monthly_revenue_min: 300000
+    monthly_revenue_max: 15000000
+    country_weights: {US: 0.30, DE: 0.15, FR: 0.10, NL: 0.05, GB: 0.15, IN: 0.15, JP: 0.10}
+  account:
+    min_per_entity: 3
+    max_per_entity: 8
+    foreign_currency_share: 0.4
+    extra_type_weights: {PAYROLL: 0.30, RESERVE: 0.30, COLLECTION: 0.25, DISBURSEMENT: 0.15}
+    opening_buffer_months: {OPERATING: 1.0, COLLECTION: 0.3, DISBURSEMENT: 0.5, PAYROLL: 0.3, RESERVE: 2.0}
+    annual_interest_bp: {OPERATING: 50, COLLECTION: 25, DISBURSEMENT: 25, PAYROLL: 25, RESERVE: 350}
+    monthly_fee_reporting_range: [15, 250]
+    dormant_window: ["2026-03-02", "2026-05-29"]
+  receivable:
+    payment_terms_days: [30, 45, 60]
+    payment_terms_weights: [0.5, 0.3, 0.2]
+    risk_class_weights: {A: 0.50, B: 0.35, C: 0.15}
+    delay_gamma:
+      A: {shape: 1.2, scale: 2.0, shift: -1}
+      B: {shape: 2.0, scale: 5.0, shift: 0}
+      C: {shape: 2.0, scale: 12.0, shift: 0}
+    write_off_probability: {A: 0.0, B: 0.015, C: 0.06}
+    write_off_after_days: 60
+    partial_payment_probability: 0.04
+    partial_first_share_bp: 6000
+    partial_second_lag_days: 15
+    instalment_gap_days: 30
+    amount_sigma: 0.9
+    receivable_share_of_variable_items: 0.55
+    account_type_weights: {OPERATING: 0.6, COLLECTION: 0.4}
+  payable:
+    supplier_terms_days: [30, 45, 60]
+    supplier_terms_weights: [0.4, 0.4, 0.2]
+    payment_run_weekday: 3            # 0=Mon .. 3=Thu weekly payment run
+    supplier_spend_ratio: 0.55
+    late_payment_probability: 0.05
+    cancel_probability: 0.015
+    approval_lead_business_days: 2
+    payroll_ratio: 0.22
+    payroll_day: 25
+    payroll_noise_sigma: 0.015
+    rent_ratio: 0.04
+    tax_ratio: 0.04                   # of quarterly revenue
+    tax_dates: ["2026-01-15", "2026-04-15"]
+    tax_notice_days: 30
+    one_off_ratio_range: [0.5, 2.5]   # multiples of monthly revenue
+    one_off_notice_days_range: [20, 45]
+    one_off_categories: [CAPEX, DIVIDEND, LEGAL_SETTLEMENT, ACQUISITION_DEPOSIT]
+    amount_sigma: 0.8
+    account_type_weights: {OPERATING: 0.6, DISBURSEMENT: 0.4}
+  ledger:
+    posting_lag_probability: 0.05
+    posting_hour_utc: 18
+    sundry_median_ratio: 0.002
+    sundry_sigma: 1.1
+    sundry_cap_ratio: 0.05
+    sundry_account_weights: {OPERATING: 5.0, COLLECTION: 2.0, DISBURSEMENT: 2.0, PAYROLL: 0.5, RESERVE: 0.0}
+    sundry_receipt_probability: {OPERATING: 0.5, COLLECTION: 0.7, DISBURSEMENT: 0.3, PAYROLL: 0.4, RESERVE: 0.5}
+  forecast_item:
+    known_hour_utc: 9
+
+forecast:
+  cutoff_dates: ["2026-03-01", "2026-04-01", "2026-05-01", "2026-06-01"]
+  horizon_days: 30
+  overdue_receivable_roll_days: 7
+  overdue_payable_roll_days: 0
+  liquidity_policy_months: "0.5"     # entity minimum cash = 0.5 x monthly revenue (reporting ccy)
+  reruns:
+    - {cutoff_date: "2026-06-01", scenario_code: BASE, actor_role: RISK_REVIEWER,
+       reason: "Reviewer requested re-execution after FX exception review"}
+
+export:
+  dataset_formats: [csv, json]       # published post-injection dataset (detector input) + derived outputs
+  baseline_formats: [csv]            # clean baseline copy, kept for comparison
+  derived_json_max_rows: 100000      # derived tables larger than this are CSV-only (size); inputs always CSV+JSON
+
+evaluation:
+  pct_error_min_abs_actual_reporting_minor: 100000   # percentage error only where |actual| >= 1,000.00
+  horizon_buckets: [[1, 7], [8, 14], [15, 21], [22, 30]]

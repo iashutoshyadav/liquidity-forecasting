@@ -1,0 +1,33 @@
+# Scenarios differ ONLY by these documented parameters (see docs/scenarios.md).
+# Receivable delay applies to CUSTOMER_RECEIPT lines selected by a stable hash:
+#   select if sha256(seed|scenario_code|cf_id) / 2^64 < proportion
+scenarios:
+  BASE:
+    scenario_id: SCN-BASE
+    name: Base case
+    description: Receivables at expected dates, payables at scheduled dates, FX held at the last rate published before cutoff.
+    receivable_delay: {proportion: "0", delay_days: 0}
+    collection_haircut_bp: 0
+    fx_shock_bp: {}
+    one_off_payment: null
+  DELAYED_RECEIPT:
+    scenario_id: SCN-DELAYED_RECEIPT
+    name: Delayed receipts
+    description: 30% of customer receipts slip 14 calendar days (rolled to next business day); everything else as BASE.
+    receivable_delay: {proportion: "0.30", delay_days: 14}
+    collection_haircut_bp: 0
+    fx_shock_bp: {}
+    one_off_payment: null
+  STRESS:
+    scenario_id: SCN-STRESS
+    name: Liquidity stress
+    description: 40% of customer receipts slip 21 days, 10% collection haircut on all customer receipts, adverse FX shock on non-USD balances, and an unplanned one-off payment.
+    receivable_delay: {proportion: "0.40", delay_days: 21}
+    collection_haircut_bp: 1000
+    fx_shock_bp: {EUR: -500, GBP: -500, INR: -800, JPY: -600}
+    one_off_payment:
+      entity_id: ENT-000001
+      account_type: OPERATING
+      amount_reporting_minor: 800000000     # 8,000,000.00 USD
+      offset_days: 7
+      description: "Unplanned litigation settlement (stress assumption)"

@@ -1,0 +1,7 @@
+# Labelled edge cases injected AFTER the clean baseline has been validated.
+anomalies:
+  counts:
+    starter: {BALANCE_MISMATCH: 5, FX_RATE_MISSING: 3, DUPLICATE_CASH_FLOW: 5, CUTOFF_LEAKAGE: 4, MIXED_CURRENCY: 4}
+    full:    {BALANCE_MISMATCH: 25, FX_RATE_MISSING: 10, DUPLICATE_CASH_FLOW: 20, CUTOFF_LEAKAGE: 15, MIXED_CURRENCY: 15}
+  balance_delta_reporting_range: [50, 25000]   # size of injected statement break (reporting-ccy equivalent)
+  fx_missing_window_margin_days: 5             # keep removed rates away from the range edges

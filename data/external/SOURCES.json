@@ -1,0 +1,46 @@
+{
+  "retrieved": "2026-10-27",
+  "datasets": [
+    {
+      "role": "currency_rate values (fx_source: kaggle)",
+      "url": "https://www.kaggle.com/datasets/asaniczka/forex-exchange-rate-since-2004-updated-daily",
+      "dataset": "asaniczka/forex-exchange-rate-since-2004-updated-daily",
+      "version": 1091,
+      "licence": "ODC Attribution License (ODC-By)",
+      "attribution": "Forex Exchange Rates Since 2004 by asaniczka (Kaggle)",
+      "raw_file": "daily_forex_rates.csv",
+      "raw_sha256": "74fc12d72d205ae4987f2572e2924aac2fe2cac7364d5af70a91880a8a268abd",
+      "transformations": "kept USD, GBP, INR, JPY vs EUR base for business days 2025-12-31..2026-06-30 (project calendar); converted to USD per 1 unit: EUR = USD/EUR; X = (USD/EUR)/(X/EUR); exact Decimal division, 8 dp ROUND_HALF_EVEN",
+      "fields_discarded": "currency_name; all other 172 currencies; weekend/holiday rows; dates outside the window",
+      "output_file": "data/external/fx_rates_kaggle_v1091.csv",
+      "output_sha256": "a08f5e8a724cd28e26bbe10366bf77a9deb17af01c5e010df6f57cfa6f8e3c21",
+      "rows": 508,
+      "business_days": 127,
+      "currencies": [
+        "EUR",
+        "GBP",
+        "INR",
+        "JPY"
+      ]
+    },
+    {
+      "role": "receivable payment-delay calibration (receivable_delay_profile: calibrated)",
+      "url": "https://www.kaggle.com/datasets/sonalisingh1411/accounts-receivable-and-payment-delay-analysis",
+      "dataset": "sonalisingh1411/accounts-receivable-and-payment-delay-analysis",
+      "version": 1,
+      "licence": "Apache License 2.0",
+      "attribution": "Accounts Receivable & Payment Delay Analysis by Sonali Singh (Kaggle)",
+      "raw_file": "Dataset.csv",
+      "raw_sha256": "2a7f1dfc4e52231d4a4cb60ee019d6cef3730708afffb1c12786b4d3061bb32d",
+      "transformations": "customers with >=20 invoices segmented by median delay (A <=2d, B 3-10d, C >10d); per segment: trim 1%/99% tails, shift = floor(p05), method-of-moments gamma on (delay - shift)",
+      "fields_used": [
+        "Customer_Name",
+        "Days_Overdue_Delay"
+      ],
+      "fields_discarded": "all other 27 columns (amounts, regions, cities, zip codes, dates, payment methods, flags)",
+      "output_file": "data/external/ar_delay_calibration.json",
+      "output_sha256": "7a1234355c3417f57c660b992e804c359e9a800a67ba99461e770061fcf3afc8",
+      "note": "only aggregate statistics are stored; no rows are redistributed"
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+# Both scales use identical generation algorithms; only volumes differ.
+scales:
+  starter:
+    legal_entities: 5
+    bank_accounts: 20
+    ledger_entries: 10000
+    forecast_items: 2000
+    ic_pairs: 10
+    one_off_payments: 5
+    instalment_receivables: 10
+    dormant_accounts: 1
+    legit_same_amount_pairs: 3
+  full:
+    legal_entities: 30
+    bank_accounts: 150
+    ledger_entries: 100000
+    forecast_items: 20000
+    ic_pairs: 150
+    one_off_payments: 40
+    instalment_receivables: 100
+    dormant_accounts: 3
+    legit_same_amount_pairs: 10
