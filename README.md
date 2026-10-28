@@ -486,7 +486,7 @@ checksums, raw bytes and validation summaries. Verified results:
 | Full, hybrid (current, incl. dashboard) | 100 / 100 files identical |
 | Starter, hybrid (current, incl. dashboard) | 102 / 102 files identical |
 | Full, synthetic (earlier version, before revisions and the bank model) | 91 / 91 files identical |
-| Fresh clone: pandas 2.3.3 + NumPy 1.26.4 vs pandas 3.1.0 + NumPy 2.4.6 (starter, earlier version) | 92 / 92 files identical |
+| Fresh clone: pandas 2.3.3 + NumPy 1.26.4 vs pandas 3.1.0 + NumPy 2.4.6 (current) | full 100 / 100, starter 102 / 102 files identical |
 
 How determinism is achieved:
 - one named random stream per module, so changing one generator doesn't shift the others;
