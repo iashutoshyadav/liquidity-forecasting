@@ -205,7 +205,7 @@ def _sundry(ctx: GenContext, accounts: pd.DataFrame, n: int, active_on) -> pd.Da
     month_end = set()
     for me in ctx.cal.month_end_business_days(s.start, s.end):
         month_end |= {pd.Timestamp(me), pd.Timestamp(ctx.cal.add_business_days([me], -1)[0])}
-    dw = np.array([cfg["sundry_weekday_weights"][d.dayofweek] for d in bdays], dtype=float)
+    dw = np.array([cfg["sundry_weekday_weights"][d.day_of_week] for d in bdays], dtype=float)
     dw *= np.where(bdays.isin(list(month_end)), float(cfg["sundry_month_end_multiplier"]), 1.0)
     day = bdays[rng.choice(len(bdays), size=n, p=dw / dw.sum())]
     a = accounts.iloc[pick].reset_index(drop=True)

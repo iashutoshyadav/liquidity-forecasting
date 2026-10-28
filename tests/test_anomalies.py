@@ -95,3 +95,12 @@ def test_ground_truth_isolation(injected, inj_result, settings, calfx):
     assert "ground_truth" not in inj.tables
     again = detect_all(inj, inj_result.positions_raw, calfx[0], settings)
     pd.testing.assert_frame_equal(again.reset_index(drop=True), inj_result.detections.reset_index(drop=True))
+
+
+def test_ground_truth_writes_missing_values_as_empty():
+    """pandas 3 hands missing strings over as NaN; the label file must not depend on the pandas version."""
+    from liqfc.anomalies.ground_truth import GroundTruth
+    g = GroundTruth()
+    for i, v in enumerate([None, float("nan"), pd.NA, pd.NaT, "x", 0]):
+        g.add("T", "t", f"R{i}", "f", v, v, "RULE", "D")
+    assert g.frame()["original_value"].tolist() == ["", "", "", "", "x", "0"]

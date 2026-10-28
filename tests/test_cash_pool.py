@@ -86,7 +86,7 @@ def test_sundry_flows_are_small_balanced_and_seasonal(baseline):
     external = led[~led["entry_type"].str.startswith("INTERNAL_TRANSFER")]
     assert sund["amount_minor"].abs().sum() / external["amount_minor"].abs().sum() < 0.20
     assert abs(sund["amount_minor"].sum()) / sund["amount_minor"].abs().sum() < 0.10
-    by_day = sund["value_date"].dt.dayofweek.value_counts()
+    by_day = sund["value_date"].dt.day_of_week.value_counts()
     assert by_day[4] > by_day[2] and by_day[0] > by_day[2]
 
 

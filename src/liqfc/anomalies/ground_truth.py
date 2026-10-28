@@ -8,6 +8,10 @@ from liqfc.core.schema import GROUND_TRUTH_COLUMNS
 STAGE = "POST_BASELINE_VALIDATION"
 
 
+def _text(v) -> str:
+    return "" if v is None or (not isinstance(v, str) and pd.isna(v)) else str(v)
+
+
 class GroundTruth:
     def __init__(self):
         self._rows: list[dict] = []
@@ -16,8 +20,8 @@ class GroundTruth:
             decision: str, notes: str = "") -> None:
         self._rows.append({
             "issue_type": issue_type, "affected_table": table, "affected_record_id": record_id,
-            "affected_field": field, "original_value": "" if original is None else str(original),
-            "injected_value": "" if injected is None else str(injected), "expected_detection_rule": rule,
+            "affected_field": field, "original_value": _text(original),
+            "injected_value": _text(injected), "expected_detection_rule": rule,
             "expected_decision": decision, "injection_stage": STAGE, "notes": notes,
         })
 
