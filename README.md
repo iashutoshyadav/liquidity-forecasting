@@ -5,7 +5,7 @@ flows across 30 legal entities, 150 bank accounts and 5 currencies. It then fore
 liquidity under three scenarios, catches bad data before it reaches a forecast, and explains every
 gap between forecast and reality, down to the source record.
 
-Python 3.11 · pandas · NumPy · SQLite · pytest · fully deterministic (seed `20261022`) · 118 tests
+Python 3.11 · pandas · NumPy · SQLite · pytest · fully deterministic (seed `20261022`) · 125 tests · HTML dashboard
 
 ---
 
@@ -20,7 +20,8 @@ Python 3.11 · pandas · NumPy · SQLite · pytest · fully deterministic (seed 
 | Forecast accuracy (BASE scenario) | **7.1%** average error (MAPE) per account and **3.4%** for the group; 5.2% on days 1–7 rising to 11.2% on days 22–30 (all scenarios) |
 | Variance explained | Every forecast-vs-actual gap split into causes; rounding residual ≤ 2 cents |
 | Stress testing | STRESS lowers minimum group cash by **28–42M USD**; one entity's projected cash goes negative (CRITICAL alert) |
-| Reproducibility | Two independent runs → **99 / 99** output files byte-identical (full), 101 / 101 (starter) |
+| Reproducibility | Two independent runs → **100 / 100** output files byte-identical (full), 102 / 102 (starter) |
+| Dashboard | One offline HTML page per run (`reports/dashboard.html`): cash, forecasts, causes of error, runs, alerts, reconciliation, data quality |
 
 ---
 
@@ -78,6 +79,7 @@ The full original challenge statement is in [docs/challenge_statement.md](docs/c
 | **Detect** | Five kinds of bad data are planted, labelled in a separate answer key, and found by independent rules |
 | **Decide** | Each finding gets a documented decision (auto-resolved, held for review, rejected) in an exception log |
 | **Alert** | Projected breaches of each entity's minimum-cash policy |
+| **Show** | A self-contained HTML dashboard of every run, built from the exported outputs |
 | **Prove** | 200+ validation checks, evaluation metrics, a checksum manifest, and a two-run reproducibility test |
 
 ## 3. Quick start
@@ -97,13 +99,14 @@ pip install -e . --no-deps            # makes `python -m liqfc.cli` available
 ```bash
 python -m liqfc.cli all --scale starter     # small dataset, ~20-60 s
 python -m liqfc.cli all --scale full        # required volumes, ~3-7 min, ~400 MB of output
-pytest                                      # 118 tests, ~2-3 min
+pytest                                      # 125 tests, ~2-3 min
 ```
 
 **Look at the results:**
 
 | Open this | To see |
 |---|---|
+| `output/<scale>/reports/dashboard.html` | **The dashboard**: open it in any browser (no server, works offline) |
 | `output/<scale>/reports/evaluation_report.md` | All metrics in one readable page |
 | `output/<scale>/reports/validation_summary.json` | Every validation check and its result |
 | `output/<scale>/dataset/input/csv/` | The generated source data (detector input) |
@@ -143,7 +146,7 @@ flowchart TD
 | 7. Compare | Forecast vs actual, variance broken into causes with source references | `engine/variance.py` |
 | 8. Validate all | 200+ checks on inputs and outputs; failures go to the exception log | `validation/`, `pipeline.py` |
 | 9. Evaluate | Accuracy, data quality, detection precision/recall, liquidity metrics | `engine/evaluation.py` |
-| 10. Export | Canonical CSV/JSON, SQL schema + seed, data dictionary, manifest with SHA-256 | `exporters/` |
+| 10. Export | Canonical CSV/JSON, SQL schema + seed, data dictionary, HTML dashboard, manifest with SHA-256 | `exporters/` |
 
 Each stage is a plain function of the configuration and the previous stage's output: no hidden
 state, no services, no clock.
@@ -429,6 +432,7 @@ output/<scale>/
 ├── baseline/                the clean dataset and its outputs (CSV), for comparison
 ├── ground_truth/            ground_truth.csv / .json: the answer key
 ├── reports/
+│   ├── dashboard.html             the dashboard (self-contained, open in a browser)
 │   ├── evaluation_report.md       readable summary of every metric
 │   ├── evaluation_summary.json    the same, machine-readable
 │   ├── validation_summary.json    every check, per stage
@@ -436,6 +440,24 @@ output/<scale>/
 │   └── data_dictionary.md
 └── manifest.json            every file: rows, bytes, SHA-256; seed, scale, config hash, command, data sources
 ```
+
+### 10.1 The dashboard
+`reports/dashboard.html` is written by `all` (or rebuilt from existing outputs with
+`python -m liqfc.cli dashboard --scale full`). It's one file with no external scripts or network calls,
+so it opens offline and can be attached to an email. A cutoff selector (1 March to 1 June) drives the top half:
+
+| Section | Shows |
+|---|---|
+| Headline tiles | Group cash at the cutoff, lowest projected cash vs the policy minimum, stress impact, alerts, runs held |
+| Group cash, actual | Daily group cash for the whole period, the policy minimum and the selected cutoff |
+| Forecast vs actual | The three scenario projections against what actually happened |
+| What explains the gap | Day-30 variance split into timing, amount, unforecast, bad data excluded and FX movement, per scenario |
+| Runs and alerts | Each run's status with its hold reasons (RUN-01), and entity minimum-cash breaches |
+| Whole period | Error by horizon and scenario, reconciliation items and breaks, planted problems found, exception log, validation |
+
+Every number is read from the exported CSV/JSON files, so the page can't disagree with the data. It has
+hover and keyboard tooltips, a table view under each chart, and light and dark themes. The page is listed in
+the manifest and covered by the reproducibility test (byte-identical across runs).
 
 Good tables to start with:
 - `forecast_run.csv`: one row per forecast version with its key metrics.
@@ -455,8 +477,8 @@ checksums, raw bytes and validation summaries. Verified results:
 
 | Run | Result |
 |---|---|
-| Full, hybrid (current) | 99 / 99 files identical |
-| Starter, hybrid (current) | 101 / 101 files identical |
+| Full, hybrid (current, incl. dashboard) | 100 / 100 files identical |
+| Starter, hybrid (current, incl. dashboard) | 102 / 102 files identical |
 | Full, synthetic (earlier version, before revisions and the bank model) | 91 / 91 files identical |
 | Fresh clone: pandas 2.3.3 + NumPy 1.26.4 vs pandas 3.1.0 + NumPy 2.4.6 (starter, earlier version) | 92 / 92 files identical |
 
@@ -476,9 +498,10 @@ How determinism is achieved:
 | `generate` | Generate + validate the clean baseline, inject anomalies, export data, SQL and ground truth |
 | `forecast` | + positions, detection, forecast runs, comparisons, alerts |
 | `validate` | + full validation, exception log, audit trail |
-| `all` / `export` | + evaluation metrics and manifest (`--with-reproduce` adds the two-run test) |
+| `all` / `export` | + evaluation metrics, dashboard and manifest (`--with-reproduce` adds the two-run test) |
 | `reproduce` | Two complete runs and a checksum comparison |
 | `docs` | Regenerate `docs/data_dictionary.md` from the schema |
+| `dashboard` | Rebuild `reports/dashboard.html` from an existing output folder |
 
 **Options:**
 - `--scale starter|full`
@@ -518,11 +541,11 @@ liquidity-forecasting/
 │   ├── anomalies/     injectors, ground_truth
 │   ├── validation/    checks, foreign_keys, lifecycle, reconciliation, reproducibility, report
 │   ├── audit/         append-only event logs, run lifecycle, history replay
-│   └── exporters/     canonical CSV/JSON, SQL seed, data dictionary, manifest
+│   └── exporters/     canonical CSV/JSON, SQL seed, data dictionary, dashboard, manifest
 ├── scripts/           reproduce.py · prepare_external_data.py
 ├── docs/              architecture · data_dictionary · erd · business_rules · scenarios ·
 │                      anomaly_catalog · provenance
-└── tests/             18 test modules, 118 tests
+└── tests/             19 test modules, 125 tests
 ```
 
 ## 14. Design decisions
@@ -560,7 +583,8 @@ liquidity-forecasting/
 - The bank model and the ledger start from the same economic events by design, so the bank side differs only through the documented bank rules (clearing delays, charges). It doesn't model bank errors, reversals or many-to-one netting, and matching requires an exact amount.
 - CUT-003 (untracked overwrite) has no planted anomaly, so its precision and recall aren't measured; it's covered by unit tests only.
 - The Kaggle FX source doesn't name its upstream provider, so treat the rates as realistic market levels, not official fixings.
-- No dashboard; the problem statement made it optional. The outputs are structured to feed one.
+- The dashboard is a static report of one run, not a live application: no logins, no editing, no approval workflow.
+  Filtering is by cutoff only; account- and entity-level drill-down is in the CSV outputs.
 
 ## 16. Requirements traceability
 

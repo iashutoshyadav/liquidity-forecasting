@@ -4,6 +4,7 @@
     python -m liqfc.cli validate --scale starter
     python -m liqfc.cli reproduce --scale starter
     python -m liqfc.cli docs
+    python -m liqfc.cli dashboard --scale starter   (rebuild reports/dashboard.html from existing outputs)
 
 Commands run their prerequisite stages automatically (generation is deterministic and fast).
 """
@@ -31,7 +32,7 @@ def main(argv: list[str] | None = None) -> int:
     from liqfc.validation.reproducibility import reproduce
 
     p = argparse.ArgumentParser(prog="liqfc", description="Liquidity forecasting and risk monitoring pipeline")
-    p.add_argument("command", choices=["generate", "forecast", "validate", "export", "all", "reproduce", "docs"])
+    p.add_argument("command", choices=["generate", "forecast", "validate", "export", "all", "reproduce", "docs", "dashboard"])
     p.add_argument("--scale", choices=["starter", "full"], default="starter")
     p.add_argument("--seed", type=int, default=None, help="override master seed (default from config: 20261022)")
     p.add_argument("--output", default=None, help="output directory (default output/<scale>)")
@@ -50,6 +51,13 @@ def main(argv: list[str] | None = None) -> int:
     settings = load_settings(args.scale, seed=args.seed, config_dir=args.config_dir, data_mode=args.data_mode)
     out = _out_dir(args)
     t0 = time.time()
+    if args.command == "dashboard":
+        from liqfc.exporters.dashboard import build_dashboard
+        if not (out / "reports" / "evaluation_summary.json").exists():
+            print(f"no evaluated outputs in {out}; run 'all' first", file=sys.stderr)
+            return 1
+        print(f"wrote {build_dashboard(out, settings)}")
+        return 0
     if args.command == "reproduce":
         cmd = f"python -m liqfc.cli all --scale {args.scale} --seed {settings.seed} --data-mode {settings.external['mode']}"
         report = reproduce(lambda s, d: run_pipeline(s, d, "all", cmd, log=lambda m: None), settings, out)

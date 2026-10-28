@@ -13,6 +13,7 @@ from liqfc.audit.events import AuditTrail, RunLifecycle
 from liqfc.core.schema import INPUT_TABLES
 from liqfc.engine.evaluation import data_quality_metrics, detection_metrics, forecast_metrics, liquidity_metrics
 from liqfc.exporters.csv_json import write_plain_csv, write_tables, write_text
+from liqfc.exporters.dashboard import build_dashboard
 from liqfc.exporters.data_dictionary import render as render_dictionary
 from liqfc.exporters.manifest import write_manifest
 from liqfc.exporters.sql_seed import ddl, seed
@@ -282,6 +283,8 @@ def run_pipeline(settings, out_dir: Path, stage: str = "all", command: str | Non
         write_text(out / "reports" / "evaluation_summary.json", json.dumps(ev, indent=2, default=str) + "\n")
         write_text(out / "reports" / "evaluation_report.md", render_evaluation_md(ev, info, settings))
         info["evaluation"] = {"detection_all": ev["detection"]["injected"]["ALL"]}
+        log("[dashboard] writing reports/dashboard.html")
+        build_dashboard(out, settings)
     write_manifest(out, settings, command)
     log(f"[done] outputs written to {out}")
     return info

@@ -36,7 +36,7 @@ engine/      balances → daily/consolidated positions (FX effective-dated)   �
 validation/  baseline + injected validation reports ── engine/evaluation (metrics vs ground truth)
         │
         ▼
-exporters/   canonical CSV / JSON · SQL schema + seed · data dictionary · manifest (SHA-256)
+exporters/   canonical CSV / JSON · SQL schema + seed · data dictionary · HTML dashboard · manifest (SHA-256)
 validation/reproducibility.py  run twice in temp dirs → compare checksums
 ```
 
@@ -69,6 +69,7 @@ pure function of the configuration and the outputs of earlier stages.
 | `validation/*` | Structural, FK (incl. polymorphic + SQLite), lifecycle, business, reproducibility |
 | `audit/*` | Append-only logs, run lifecycle state machine, history replay |
 | `exporters/*` | Canonical CSV/JSON, SQL DDL/seed, data dictionary, manifest |
+| `exporters/dashboard.py` | Self-contained `reports/dashboard.html` built from the exported outputs (read-only view; never reads ground truth) |
 | `pipeline.py` / `cli.py` | Stage orchestration and the command line |
 
 ## Key design decisions
@@ -94,6 +95,7 @@ pure function of the configuration and the outputs of earlier stages.
 | `ground_truth/ground_truth.{csv,json}` | Anomaly labels |
 | `reports/validation_summary.json` | Validation of the baseline before injection, the baseline with derived outputs, and the injected dataset |
 | `reports/evaluation_summary.json`, `evaluation_report.md` | Metrics |
+| `reports/dashboard.html` | Offline dashboard: cash, forecasts, variance causes, runs, alerts, reconciliation, data quality |
 | `reports/reproducibility_report.{json,md}` | Output of `reproduce` |
 | `reports/data_dictionary.md` | Copy of the generated dictionary |
 | `manifest.json` | Every file with rows, bytes and SHA-256; seed, scale, config hash, version, command |
