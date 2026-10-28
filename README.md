@@ -7,6 +7,8 @@ gap between forecast and reality, down to the source record.
 
 Python 3.11 · pandas · NumPy · SQLite · pytest · fully deterministic (seed `20261022`) · 125 tests · HTML dashboard
 
+**[Open the live dashboard](https://iashutoshyadav.github.io/liquidity-forecasting/dashboard.html)**: full-scale run, opens in the browser, nothing to install.
+
 ---
 
 ## At a glance (full scale, verified results)
@@ -442,6 +444,10 @@ output/<scale>/
 ```
 
 ### 10.1 The dashboard
+**Live copy:** [https://iashutoshyadav.github.io/liquidity-forecasting/dashboard.html](https://iashutoshyadav.github.io/liquidity-forecasting/dashboard.html). It's a snapshot of the full-scale run (seed `20261022`), stored as
+[`docs/dashboard.html`](docs/dashboard.html) and served by GitHub Pages. It's byte-identical to the
+`output/full/reports/dashboard.html` a fresh `python -m liqfc.cli all --scale full` produces.
+
 `reports/dashboard.html` is written by `all` (or rebuilt from existing outputs with
 `python -m liqfc.cli dashboard --scale full`). It's one file with no external scripts or network calls,
 so it opens offline and can be attached to an email. A cutoff selector (1 March to 1 June) drives the top half:

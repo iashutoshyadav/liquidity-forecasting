@@ -1,0 +1,613 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Liquidity Dashboard (full)</title>
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7; --surface-1: #fcfcfb;
+  --text-primary: #0b0b0b; --text-secondary: #52514e; --text-muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10);
+  --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --series-ink: #0b0b0b;
+  --good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b;
+  --good-text: #006300; --wash: rgba(42,120,214,0.08);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface-1: #1a1a19;
+    --text-primary: #f0efec; --text-secondary: #c3c2b7; --text-muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+    --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-ink: #f0efec;
+    --good-text: #0ca30c; --wash: rgba(57,135,229,0.14);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface-1: #1a1a19;
+  --text-primary: #f0efec; --text-secondary: #c3c2b7; --text-muted: #898781;
+  --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+  --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-ink: #f0efec;
+  --good-text: #0ca30c; --wash: rgba(57,135,229,0.14);
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--text-primary);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 1240px; margin: 0 auto; padding: 24px 16px 48px; }
+h1 { font-size: 24px; margin: 0 0 4px; font-weight: 650; }
+h2 { font-size: 16px; margin: 0 0 2px; font-weight: 600; }
+h3 { font-size: 13px; margin: 0 0 6px; font-weight: 600; color: var(--text-secondary); }
+.sub, .note { color: var(--text-secondary); margin: 0; }
+.note { font-size: 12.5px; }
+.divider { margin: 36px 0 12px; padding-top: 16px; border-top: 1px solid var(--grid); }
+.filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 20px 0 16px; }
+.filters .lab { color: var(--text-secondary); margin-right: 4px; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--surface-1); }
+.seg button { font: inherit; border: 0; background: transparent; color: var(--text-primary); padding: 6px 12px; cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button:hover { background: var(--wash); }
+.seg button[aria-pressed="true"] { background: var(--text-primary); color: var(--surface-1); font-weight: 600; }
+.tiles { display: grid; grid-template-columns: 1.4fr repeat(4, 1fr); gap: 12px; }
+.tile, .card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px; padding: 16px; min-width: 0; }
+.tile .label { color: var(--text-secondary); font-size: 12.5px; }
+.tile .value { font-size: 26px; font-weight: 600; margin-top: 4px; }
+.tile.hero .value { font-size: 48px; line-height: 1.1; }
+.tile .delta { color: var(--text-secondary); font-size: 12.5px; margin-top: 2px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+.grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.card { margin-top: 12px; }
+.grid2 > .card, .grid3 > .card { margin-top: 0; }
+.card header { margin-bottom: 10px; }
+.chart { width: 100%; position: relative; }
+.chart svg { display: block; overflow: visible; }
+.chart svg:focus { outline: 2px solid var(--series-1); outline-offset: 2px; border-radius: 4px; }
+.grid { stroke: var(--grid); stroke-width: 1; }
+.axis { stroke: var(--axis); stroke-width: 1; }
+.tick { fill: var(--text-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.rowlab { fill: var(--text-secondary); font-size: 12px; }
+.val { fill: var(--text-primary); font-size: 12px; font-variant-numeric: tabular-nums; }
+.reflab { fill: var(--text-secondary); font-size: 11px; }
+.hit { fill: transparent; cursor: default; }
+.hit:hover + .bar, .hit:focus + .bar { opacity: 0.8; }
+.hit:focus { outline: none; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 0 0 8px; color: var(--text-secondary); font-size: 12.5px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.key { display: inline-block; width: 14px; height: 2px; border-radius: 1px; }
+.key.ref { height: 1.5px; background: var(--text-secondary); }
+#tip { position: fixed; z-index: 10; pointer-events: none; background: var(--surface-1); color: var(--text-primary);
+  border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 12.5px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.12); display: none; min-width: 150px; }
+#tip .hd { color: var(--text-secondary); margin-bottom: 4px; }
+#tip .row { display: flex; align-items: center; gap: 8px; }
+#tip .row b { font-variant-numeric: tabular-nums; }
+#tip .row span:last-child { color: var(--text-secondary); }
+details { margin-top: 8px; }
+summary { cursor: pointer; color: var(--text-secondary); font-size: 12.5px; }
+.tablewrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 12.5px; margin-top: 6px; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+th { color: var(--text-secondary); font-weight: 600; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+td.nw { white-space: nowrap; }
+#t-runs table { min-width: 640px; }
+#t-alerts table, #t-accuracy table, #t-detection table { min-width: 460px; }
+tr.sel td { background: var(--wash); }
+.badge { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
+.empty { color: var(--text-secondary); padding: 8px 0; }
+.reasons { margin: 4px 0 0; padding-left: 16px; color: var(--text-secondary); }
+footer { margin-top: 32px; color: var(--text-muted); font-size: 12px; }
+@media (max-width: 980px) { .tiles { grid-template-columns: 1fr 1fr; } .tile.hero { grid-column: 1 / -1; } .grid3 { grid-template-columns: 1fr; } }
+@media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } }
+@media (max-width: 420px) { .tiles { grid-template-columns: 1fr; } .tile.hero .value { font-size: 40px; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Liquidity dashboard</h1>
+  <p class="sub" id="meta"></p>
+  <p class="note">Positions, forecasts, runs, alerts, reconciliation and exceptions come from the published dataset, which
+    includes the planted anomalies. Accuracy is measured on the clean baseline; detection is scored against the separate ground truth.</p>
+
+  <div class="filters" role="group" aria-label="Forecast cutoff">
+    <span class="lab">Forecast cutoff</span>
+    <div class="seg" id="cutoffs"></div>
+  </div>
+
+  <section class="tiles" id="tiles" aria-live="polite"></section>
+
+  <div class="grid2">
+    <section class="card">
+      <header><h2>Group cash, actual</h2><p class="note" id="hist-note"></p></header>
+      <div class="chart" id="c-history"></div>
+      <details><summary>Show table</summary><div class="tablewrap" id="t-history"></div></details>
+    </section>
+    <section class="card">
+      <header><h2 id="fc-title">Forecast vs actual</h2><p class="note" id="fc-note"></p></header>
+      <div class="legend" id="l-forecast"></div>
+      <div class="chart" id="c-forecast"></div>
+      <details><summary>Show table</summary><div class="tablewrap" id="t-forecast"></div></details>
+    </section>
+  </div>
+
+  <section class="card">
+    <header><h2>What explains the gap on the last forecast day</h2>
+      <p class="note">Actual minus forecast group cash on day 30, split into causes (USD). Positive means more cash than forecast. The causes add up to the total.</p></header>
+    <div class="grid3" id="c-variance"></div>
+    <details><summary>Show table</summary><div class="tablewrap" id="t-variance"></div></details>
+  </section>
+
+  <div>
+    <section class="card">
+      <header><h2>Forecast runs at this cutoff</h2><p class="note">Approval policy RUN-01: a run is held only when its own inputs are affected.</p></header>
+      <div class="tablewrap" id="t-runs"></div>
+    </section>
+    <section class="card">
+      <header><h2>Liquidity alerts at this cutoff</h2><p class="note">Projected breaches of each entity's minimum-cash policy.</p></header>
+      <div class="tablewrap" id="t-alerts"></div>
+    </section>
+  </div>
+
+  <div class="divider"><h2>Whole period</h2><p class="note" id="period-note"></p></div>
+
+  <div class="grid2">
+    <section class="card">
+      <header><h2>Forecast error by horizon</h2><p class="note" id="acc-note"></p></header>
+      <div class="chart" id="c-horizon"></div>
+      <details open><summary>Accuracy by scenario</summary><div class="tablewrap" id="t-accuracy"></div></details>
+    </section>
+    <section class="card">
+      <header><h2>Bank reconciliation</h2><p class="note">Every ledger entry and bank line appears in exactly one reconciliation item.</p></header>
+      <div class="chart" id="c-recon"></div>
+      <div class="tablewrap" id="t-recon-days"></div>
+      <details><summary>Unexplained breaks</summary><div class="tablewrap" id="t-breaks"></div></details>
+    </section>
+  </div>
+
+  <div class="grid2">
+    <section class="card">
+      <header><h2>Planted problems found</h2><p class="note" id="det-note"></p></header>
+      <div class="tablewrap" id="t-detection"></div>
+    </section>
+    <section class="card">
+      <header><h2>Exception log</h2><p class="note">Findings by rule, with the documented decision.</p></header>
+      <div class="chart" id="c-exceptions"></div>
+      <details><summary>Show table</summary><div class="tablewrap" id="t-exceptions"></div></details>
+    </section>
+  </div>
+
+  <section class="card">
+    <header><h2>Validation</h2><p class="note">Failures on the injected dataset are expected: each is caused by a planted anomaly.</p></header>
+    <div class="tablewrap" id="t-validation"></div>
+  </section>
+
+  <footer id="foot"></footer>
+</main>
+<div id="tip" role="status"></div>
+<script type="application/json" id="dash-data">{"accuracy":{"account_by_horizon":{"D01-07":{"bias":-64096.96,"mae":83077.46,"mape_pct":5.2243,"mape_rows":12600,"rmse":199254.93,"rows":12600},"D08-14":{"bias":-54541.57,"mae":127307.92,"mape_pct":8.1503,"mape_rows":12600,"rmse":440863.81,"rows":12600},"D15-21":{"bias":-69050.32,"mae":146174.63,"mape_pct":7.9823,"mape_rows":12600,"rmse":474791.8,"rows":12600},"D22-30":{"bias":37979.27,"mae":219961.71,"mape_pct":11.1924,"mape_rows":16200,"rmse":643088.42,"rows":16200}},"account_by_scenario":{"BASE":{"bias":82851.32,"mae":112733.62,"mape_pct":7.1298,"mape_rows":18000,"rmse":340164.34,"rows":18000},"DELAYED_RECEIPT":{"bias":14918.48,"mae":95289.41,"mape_pct":6.6685,"mape_rows":18000,"rmse":280667.87,"rows":18000},"STRESS":{"bias":-194970.65,"mae":239534.52,"mape_pct":11.2247,"mape_rows":18000,"rmse":706656.69,"rows":18000}},"group_by_scenario":{"BASE":{"bias":12427697.71,"mae":13525162.21,"mape_pct":3.3975,"mape_rows":120,"rmse":17340795.06,"rows":120},"DELAYED_RECEIPT":{"bias":2237772.19,"mae":7860839.21,"mape_pct":1.9807,"mape_rows":120,"rmse":10908552.85,"rows":120},"STRESS":{"bias":-29245597.69,"mae":29245597.69,"mape_pct":7.2436,"mape_rows":120,"rmse":30247235.83,"rows":120}},"overall":{"bias":-32400.28,"mae":149185.85,"mape_pct":8.341,"mape_rows":54000,"rmse":480919.23,"rows":54000},"rows":54000},"alerts":[{"days_below":22,"first_breach":"2026-03-09","id":"ALR-2026-000001","level":"ENTITY","min":-191192666,"min_date":"2026-03-12","run":"FCAST-2026-03-01-003","scope":"ENT-000001","severity":"CRITICAL","threshold":59128950},{"days_below":23,"first_breach":"2026-04-08","id":"ALR-2026-000002","level":"ENTITY","min":-157414082,"min_date":"2026-04-09","run":"FCAST-2026-04-01-003","scope":"ENT-000001","severity":"CRITICAL","threshold":59128950},{"days_below":23,"first_breach":"2026-05-08","id":"ALR-2026-000003","level":"ENTITY","min":-377926967,"min_date":"2026-05-14","run":"FCAST-2026-05-01-003","scope":"ENT-000001","severity":"CRITICAL","threshold":59128950},{"days_below":23,"first_breach":"2026-06-08","id":"ALR-2026-000004","level":"ENTITY","min":-375742145,"min_date":"2026-06-11","run":"FCAST-2026-06-01-003","scope":"ENT-000001","severity":"CRITICAL","threshold":59128950}],"cutoffs":["2026-03-01","2026-04-01","2026-05-01","2026-06-01"],"detection":{"by_type":{"ALL":{"detections":85,"f1":1.0,"fn":0,"fp":0,"labels":85,"precision":1.0,"recall":1.0,"tp":85},"BALANCE_MISMATCH":{"detections":25,"f1":1.0,"fn":0,"fp":0,"labels":25,"precision":1.0,"recall":1.0,"tp":25},"CUTOFF_LEAKAGE":{"detections":15,"f1":1.0,"fn":0,"fp":0,"labels":15,"precision":1.0,"recall":1.0,"tp":15},"DUPLICATE_CASH_FLOW":{"detections":20,"f1":1.0,"fn":0,"fp":0,"labels":20,"precision":1.0,"recall":1.0,"tp":20},"FX_RATE_MISSING":{"detections":10,"f1":1.0,"fn":0,"fp":0,"labels":10,"precision":1.0,"recall":1.0,"tp":10},"MIXED_CURRENCY":{"detections":15,"f1":1.0,"fn":0,"fp":0,"labels":15,"precision":1.0,"recall":1.0,"tp":15}},"clean_false_positives":0},"exceptions":[{"decision":"HELD_FOR_REVIEW","issue":"BALANCE_MISMATCH","n":25,"rule":"BAL-001","severity":"HIGH"},{"decision":"REJECTED","issue":"MIXED_CURRENCY","n":116,"rule":"CCY-001","severity":"HIGH"},{"decision":"REJECTED","issue":"CUTOFF_LEAKAGE","n":63,"rule":"CUT-001","severity":"HIGH"},{"decision":"AUTO_RESOLVED","issue":"DUPLICATE_CASH_FLOW","n":170,"rule":"DUP-001","severity":"MEDIUM"},{"decision":"HELD_FOR_REVIEW","issue":"FX_RATE_MISSING","n":10,"rule":"FX-001","severity":"MEDIUM"}],"forecasts":{"2026-03-01":{"actual":[44582586041,44784448781,44951330566,45056772207,44191797078,43547416602,43547416602,43547416602,44159952108,44642255186,44802065539,44007449578,44155701659,44155701659,44155701659,44786039161,45079741513,45461957852,44220304515,44663486837,44663486837,44663486837,45262464578,45322861071,43864395373,43189282362,43260812696,43260812696,43260812696,44006380712],"dates":["2026-03-01","2026-03-02","2026-03-03","2026-03-04","2026-03-05","2026-03-06","2026-03-07","2026-03-08","2026-03-09","2026-03-10","2026-03-11","2026-03-12","2026-03-13","2026-03-14","2026-03-15","2026-03-16","2026-03-17","2026-03-18","2026-03-19","2026-03-20","2026-03-21","2026-03-22","2026-03-23","2026-03-24","2026-03-25","2026-03-26","2026-03-27","2026-03-28","2026-03-29","2026-03-30"],"runs":{"BASE":{"cash":[44586781362,44927607974,45029680965,45241753775,44324602284,43663085427,43663085427,43663085427,45779194115,45835917106,46041062341,45394222603,45729834590,45729834590,45729834590,46524080170,46600996995,46801236793,45746899228,46191662813,46191662813,46191662813,47219304605,46890442584,47199833447,46636998117,47036250883,47036250883,47036250883,47828684625],"id":"FCAST-2026-03-01-001"},"DELAYED_RECEIPT":{"cash":[44586781362,44726169648,44797803833,44924516950,43936774651,43166546393,43166546393,43166546393,44506808004,44543911404,44697658110,43969519381,44224161526,44224161526,44224161526,44992896771,45055773472,45254623160,44218328755,44649051607,44649051607,44649051607,46222610097,45908475583,46233056580,45596852325,45985784514,45985784514,45985784514,46760814884],"id":"FCAST-2026-03-01-002"},"STRESS":{"cash":[43005704462,43017850570,43064969077,43207074914,42225557992,41421177061,41421177061,41421177061,41667060433,41699982281,41810602352,41018618552,41171268418,41171268418,41171268418,41642605525,41688396070,41791242322,40665468450,40961473397,40961473397,40961473397,41702154440,41384776938,41639656049,40959429108,41334940736,41334940736,41334940736,42537607401],"id":"FCAST-2026-03-01-003"}},"variance":{"BASE":{"amount":-159941285,"anomaly":-105782376,"fx_movement":-739411558,"residual":-2,"timing":-1042956493,"unforecast":-1774212199,"variance":-3822303913},"DELAYED_RECEIPT":{"amount":-139928759,"anomaly":-105782376,"fx_movement":-739411558,"residual":1,"timing":4900719,"unforecast":-1774212199,"variance":-2754434172},"STRESS":{"amount":1306571280,"anomaly":-106695824,"fx_movement":947965436,"residual":5,"timing":1048767436,"unforecast":-1727835022,"variance":1468773311}}},"2026-04-01":{"actual":[44388896543,43588390691,43588390691,43588390691,43588390691,44576513573,44801037161,45302680185,44378745514,44558685619,44558685619,44558685619,44897651080,45217434327,44531907598,43859306738,43864279282,43864279282,43864279282,44522127022,44691429093,44800998164,43334267832,41804687870,41804687870,41804687870,42515325139,42823385966,42407631046,41591388252],"dates":["2026-04-01","2026-04-02","2026-04-03","2026-04-04","2026-04-05","2026-04-06","2026-04-07","2026-04-08","2026-04-09","2026-04-10","2026-04-11","2026-04-12","2026-04-13","2026-04-14","2026-04-15","2026-04-16","2026-04-17","2026-04-18","2026-04-19","2026-04-20","2026-04-21","2026-04-22","2026-04-23","2026-04-24","2026-04-25","2026-04-26","2026-04-27","2026-04-28","2026-04-29","2026-04-30"],"runs":{"BASE":{"cash":[44008958344,43311250921,43311250921,43311250921,43311250921,44293595917,44357961692,45654185005,44797354504,45084584070,45084584070,45084584070,45743150271,45823180407,45002038984,44237127308,44336687951,44336687951,44336687951,45165085647,45222140575,45477655664,44036838661,44423755785,44423755785,44423755785,45154993467,45234032666,45442778713,44695721984],"id":"FCAST-2026-04-01-001"},"DELAYED_RECEIPT":{"cash":[43970690569,43190963363,43190963363,43190963363,43190963363,43838676249,43880350210,44724956038,43826214813,44057898312,44057898312,44057898312,44472234313,44523223028,43725056794,42970414235,42998600539,42998600539,42998600539,43924266042,43972914094,44618045465,43118870489,43413873566,43413873566,43413873566,44179551117,44266386326,44459591964,43716838626],"id":"FCAST-2026-04-01-002"},"STRESS":{"cash":[42307044322,41503989155,41503989155,41503989155,41503989155,42043296456,42082775136,41952777364,41024882759,41196608931,41196608931,41196608931,41465720965,41502605983,40646598408,39836004881,39802295359,39802295359,39802295359,40251276840,40272811981,40482929119,39054199690,39273166957,39273166957,39273166957,39979001174,40041043343,40604002948,39873987087],"id":"FCAST-2026-04-01-003"}},"variance":{"BASE":{"amount":-174057211,"anomaly":44877669,"fx_movement":40016600,"residual":-4,"timing":-826617418,"unforecast":-2188553368,"variance":-3104333732},"DELAYED_RECEIPT":{"amount":-164633348,"anomaly":44877669,"fx_movement":40016600,"residual":0,"timing":142842073,"unforecast":-2188553368,"variance":-2125450374},"STRESS":{"amount":1184419072,"anomaly":42428987,"fx_movement":1660366768,"residual":2,"timing":926042030,"unforecast":-2095855694,"variance":1717401165}}},"2026-05-01":{"actual":[39119642515,39119642515,39119642515,39229273070,39065776349,38624280740,38099528594,38383461350,38383461350,38383461350,38745186579,38449238318,38608590637,37891825346,38076167582,38076167582,38076167582,38728720401,38843588907,38710365100,38007586108,36537091532,36537091532,36537091532,36537091532,37730017457,37970575958,36775540867,35755010240,35755010240],"dates":["2026-05-01","2026-05-02","2026-05-03","2026-05-04","2026-05-05","2026-05-06","2026-05-07","2026-05-08","2026-05-09","2026-05-10","2026-05-11","2026-05-12","2026-05-13","2026-05-14","2026-05-15","2026-05-16","2026-05-17","2026-05-18","2026-05-19","2026-05-20","2026-05-21","2026-05-22","2026-05-23","2026-05-24","2026-05-25","2026-05-26","2026-05-27","2026-05-28","2026-05-29","2026-05-30"],"runs":{"BASE":{"cash":[38648640392,38648640392,38648640392,38846104815,38672907518,38095343862,37445489099,39176592207,39176592207,39176592207,39752329059,39336833897,39480401786,38701994044,39058022360,39058022360,39058022360,39819773034,39843201316,39794793013,38972141916,39406080971,39406080971,39406080971,39406080971,40335624547,40525939745,39638490500,39622935335,39622935335],"id":"FCAST-2026-05-01-001"},"DELAYED_RECEIPT":{"cash":[38592209754,38592209754,38592209754,38530600062,38340895375,37694964240,36943621342,38070895293,38070895293,38070895293,38424939329,38002945320,38081119685,37231272404,37509114700,37509114700,37509114700,38262823333,38281695859,38235204926,37420389362,38268830886,38268830886,38268830886,38268830886,39159284944,39344386743,38421845578,38429571781,38429571781],"id":"FCAST-2026-05-01-002"},"STRESS":{"cash":[36971677037,36971677037,36971677037,36809527052,36568190829,35987232074,35219165395,35429330490,35429330490,35429330490,35581232070,35145694169,35222007445,34384900745,34558562491,34558562491,34558562491,35003779232,34930676241,34816523264,33886644181,34201485012,34201485012,34201485012,34201485012,34960770271,35088725958,34161119685,34478661352,34478661352],"id":"FCAST-2026-05-01-003"}},"variance":{"BASE":{"amount":-168442907,"anomaly":20387183,"fx_movement":14339060,"residual":6,"timing":-871842709,"unforecast":-2862365728,"variance":-3867925095},"DELAYED_RECEIPT":{"amount":-149026791,"anomaly":20387183,"fx_movement":14339060,"residual":3,"timing":302104732,"unforecast":-2862365728,"variance":-2674561541},"STRESS":{"amount":1197841711,"anomaly":20481624,"fx_movement":1599069137,"residual":-1,"timing":1278263053,"unforecast":-2819306636,"variance":1276348888}}},"2026-06-01":{"actual":[36255761984,36169389212,36251239642,35577182652,35836359531,35836359531,35836359531,36537371045,36806657605,37079541128,36065452985,36438292892,36438292892,36438292892,37321268441,37487931114,37313788049,36508050348,36697009645,36697009645,36697009645,37425480595,37566733741,37653472304,35319616195,35590731437,35590731437,35590731437,36355803987,36673794424],"dates":["2026-06-01","2026-06-02","2026-06-03","2026-06-04","2026-06-05","2026-06-06","2026-06-07","2026-06-08","2026-06-09","2026-06-10","2026-06-11","2026-06-12","2026-06-13","2026-06-14","2026-06-15","2026-06-16","2026-06-17","2026-06-18","2026-06-19","2026-06-20","2026-06-21","2026-06-22","2026-06-23","2026-06-24","2026-06-25","2026-06-26","2026-06-27","2026-06-28","2026-06-29","2026-06-30"],"runs":{"BASE":{"cash":[36180700820,35898146921,36090382351,35410004870,35707091827,35707091827,35707091827,37744896269,37812625496,37978188265,37121331429,37615870676,37615870676,37615870676,38534267813,38599555209,38371927105,37700995475,37977094913,37977094913,37977094913,38916612616,38852153004,38858995895,38278517177,38765195201,38765195201,38765195201,39647100991,39792288471],"id":"FCAST-2026-06-01-004"},"DELAYED_RECEIPT":{"cash":[36003649880,35712954346,35855776954,35083148136,35261703305,35261703305,35261703305,36667121094,36711501506,36848288586,35827986900,36200725588,36200725588,36200725588,36925424989,36984002742,36744407048,36107724433,36430200293,36430200293,36430200293,37812390372,37722185960,37757804539,37235736066,37722222715,37722222715,37722222715,38686939806,38772409917],"id":"FCAST-2026-06-01-002"},"STRESS":{"cash":[34264476433,34000886254,34091893944,33287337511,33455560212,33455560212,33455560212,33682873221,33712793141,33798851706,32765325342,33115007235,33115007235,33115007235,33644910003,33668921296,33370232053,32603896699,32735571014,32735571014,32735571014,33421769758,33310127391,33385181477,32694695171,33030909197,33030909197,33030909197,34120505437,34239160767],"id":"FCAST-2026-06-01-003"}},"variance":{"BASE":{"amount":-78100119,"anomaly":19492819,"fx_movement":-256323811,"residual":5,"timing":-1188463473,"unforecast":-1615099468,"variance":-3118494047},"DELAYED_RECEIPT":{"amount":-69115834,"anomaly":19492819,"fx_movement":-256323811,"residual":10,"timing":-177569209,"unforecast":-1615099468,"variance":-2098615493},"STRESS":{"amount":1349917365,"anomaly":18452853,"fx_movement":1402004136,"residual":7,"timing":1234415917,"unforecast":-1570156621,"variance":2434633657}}}},"group":{"cash":[51536806431,51155295266,51155295266,51155295266,51104142959,51233136430,51238640913,51255242436,51243767560,51243767560,51243767560,51518792392,51609355160,51637465135,50409497985,50404611617,50404611617,50404611617,50704179698,50821020793,50873514142,50531947292,48631215865,48631215865,48631215865,48908880831,49060851344,48817761055,48213370755,48186393388,48186393388,48186393388,48316897779,48319786470,48389220651,48037946862,48172081334,48172081334,48172081334,48931086986,49275950386,49530751894,48793750919,48912100923,48912100923,48912100923,49134316040,48407510869,48586899854,47779455046,47943296735,47943296735,47943296735,48825431201,48745102090,47002054056,45696929865,44582586041,44582586041,44582586041,44784448781,44951330566,45056772207,44191797078,43547416602,43547416602,43547416602,44159952108,44642255186,44802065539,44007449578,44155701659,44155701659,44155701659,44786039161,45079741513,45461957852,44220304515,44663486837,44663486837,44663486837,45262464578,45322861071,43864395373,43189282362,43260812696,43260812696,43260812696,44006380712,44206472052,44388896543,43588390691,43588390691,43588390691,43588390691,44576513573,44801037161,45302680185,44378745514,44558685619,44558685619,44558685619,44897651080,45217434327,44531907598,43859306738,43864279282,43864279282,43864279282,44522127022,44691429093,44800998164,43334267832,41804687870,41804687870,41804687870,42515325139,42823385966,42407631046,41591388252,39119642515,39119642515,39119642515,39229273070,39065776349,38624280740,38099528594,38383461350,38383461350,38383461350,38745186579,38449238318,38608590637,37891825346,38076167582,38076167582,38076167582,38728720401,38843588907,38710365100,38007586108,36537091532,36537091532,36537091532,36537091532,37730017457,37970575958,36775540867,35755010240,35755010240,35755010240,36255761984,36169389212,36251239642,35577182652,35836359531,35836359531,35836359531,36537371045,36806657605,37079541128,36065452985,36438292892,36438292892,36438292892,37321268441,37487931114,37313788049,36508050348,36697009645,36697009645,36697009645,37425480595,37566733741,37653472304,35319616195,35590731437,35590731437,35590731437,36355803987,36673794424],"dates":["2026-01-01","2026-01-02","2026-01-03","2026-01-04","2026-01-05","2026-01-06","2026-01-07","2026-01-08","2026-01-09","2026-01-10","2026-01-11","2026-01-12","2026-01-13","2026-01-14","2026-01-15","2026-01-16","2026-01-17","2026-01-18","2026-01-19","2026-01-20","2026-01-21","2026-01-22","2026-01-23","2026-01-24","2026-01-25","2026-01-26","2026-01-27","2026-01-28","2026-01-29","2026-01-30","2026-01-31","2026-02-01","2026-02-02","2026-02-03","2026-02-04","2026-02-05","2026-02-06","2026-02-07","2026-02-08","2026-02-09","2026-02-10","2026-02-11","2026-02-12","2026-02-13","2026-02-14","2026-02-15","2026-02-16","2026-02-17","2026-02-18","2026-02-19","2026-02-20","2026-02-21","2026-02-22","2026-02-23","2026-02-24","2026-02-25","2026-02-26","2026-02-27","2026-02-28","2026-03-01","2026-03-02","2026-03-03","2026-03-04","2026-03-05","2026-03-06","2026-03-07","2026-03-08","2026-03-09","2026-03-10","2026-03-11","2026-03-12","2026-03-13","2026-03-14","2026-03-15","2026-03-16","2026-03-17","2026-03-18","2026-03-19","2026-03-20","2026-03-21","2026-03-22","2026-03-23","2026-03-24","2026-03-25","2026-03-26","2026-03-27","2026-03-28","2026-03-29","2026-03-30","2026-03-31","2026-04-01","2026-04-02","2026-04-03","2026-04-04","2026-04-05","2026-04-06","2026-04-07","2026-04-08","2026-04-09","2026-04-10","2026-04-11","2026-04-12","2026-04-13","2026-04-14","2026-04-15","2026-04-16","2026-04-17","2026-04-18","2026-04-19","2026-04-20","2026-04-21","2026-04-22","2026-04-23","2026-04-24","2026-04-25","2026-04-26","2026-04-27","2026-04-28","2026-04-29","2026-04-30","2026-05-01","2026-05-02","2026-05-03","2026-05-04","2026-05-05","2026-05-06","2026-05-07","2026-05-08","2026-05-09","2026-05-10","2026-05-11","2026-05-12","2026-05-13","2026-05-14","2026-05-15","2026-05-16","2026-05-17","2026-05-18","2026-05-19","2026-05-20","2026-05-21","2026-05-22","2026-05-23","2026-05-24","2026-05-25","2026-05-26","2026-05-27","2026-05-28","2026-05-29","2026-05-30","2026-05-31","2026-06-01","2026-06-02","2026-06-03","2026-06-04","2026-06-05","2026-06-06","2026-06-07","2026-06-08","2026-06-09","2026-06-10","2026-06-11","2026-06-12","2026-06-13","2026-06-14","2026-06-15","2026-06-16","2026-06-17","2026-06-18","2026-06-19","2026-06-20","2026-06-21","2026-06-22","2026-06-23","2026-06-24","2026-06-25","2026-06-26","2026-06-27","2026-06-28","2026-06-29","2026-06-30"],"threshold":3892504250},"meta":{"config_hash":"60f21cff92bb724490f1be961d18e508a879488bf77c096ffae4c7e2fd131fd6","data_mode":"hybrid","end":"2026-06-30","minor_units":{"EUR":2,"GBP":2,"INR":2,"JPY":0,"USD":2},"reporting_currency":"USD","scale":"full","seed":20261022,"start":"2026-01-01"},"reconciliation":{"breaks":[{"account":"BANKACC-ENT-000020-004","currency":"JPY","date":"2026-01-05","unexplained":1808884},{"account":"BANKACC-ENT-000002-001","currency":"EUR","date":"2026-01-08","unexplained":-329550},{"account":"BANKACC-ENT-000002-005","currency":"EUR","date":"2026-01-10","unexplained":472633},{"account":"BANKACC-ENT-000023-003","currency":"JPY","date":"2026-01-22","unexplained":3905060},{"account":"BANKACC-ENT-000026-001","currency":"USD","date":"2026-02-03","unexplained":2482892},{"account":"BANKACC-ENT-000025-004","currency":"USD","date":"2026-02-05","unexplained":1329308},{"account":"BANKACC-ENT-000012-005","currency":"INR","date":"2026-02-09","unexplained":-28749821},{"account":"BANKACC-ENT-000002-005","currency":"EUR","date":"2026-02-16","unexplained":1597293},{"account":"BANKACC-ENT-000017-003","currency":"USD","date":"2026-03-10","unexplained":936924},{"account":"BANKACC-ENT-000024-001","currency":"INR","date":"2026-04-04","unexplained":227603246},{"account":"BANKACC-ENT-000022-003","currency":"USD","date":"2026-04-17","unexplained":2443486},{"account":"BANKACC-ENT-000012-001","currency":"INR","date":"2026-04-20","unexplained":107855276},{"account":"BANKACC-ENT-000015-004","currency":"INR","date":"2026-04-28","unexplained":-207346151},{"account":"BANKACC-ENT-000013-004","currency":"EUR","date":"2026-05-08","unexplained":2038121},{"account":"BANKACC-ENT-000027-004","currency":"USD","date":"2026-05-08","unexplained":-1970764},{"account":"BANKACC-ENT-000007-004","currency":"USD","date":"2026-05-16","unexplained":1697445},{"account":"BANKACC-ENT-000018-003","currency":"GBP","date":"2026-05-18","unexplained":52876},{"account":"BANKACC-ENT-000019-003","currency":"USD","date":"2026-05-18","unexplained":-2195936},{"account":"BANKACC-ENT-000016-004","currency":"GBP","date":"2026-05-19","unexplained":-905463},{"account":"BANKACC-ENT-000014-005","currency":"GBP","date":"2026-05-22","unexplained":-593256},{"account":"BANKACC-ENT-000011-003","currency":"USD","date":"2026-05-26","unexplained":1171476},{"account":"BANKACC-ENT-000027-001","currency":"USD","date":"2026-05-27","unexplained":1138946},{"account":"BANKACC-ENT-000017-002","currency":"USD","date":"2026-06-08","unexplained":298116},{"account":"BANKACC-ENT-000025-003","currency":"INR","date":"2026-06-09","unexplained":214846963},{"account":"BANKACC-ENT-000015-004","currency":"INR","date":"2026-06-21","unexplained":25733940}],"days":{"BREAK":25,"RECONCILED":16214,"RECONCILING_ITEM":10911},"items":{"BANK_ONLY":304,"LEDGER_ONLY":37,"MATCHED":97599,"TIMING_DIFFERENCE":2364}},"runs":[{"alerts":0,"cutoff":"2026-03-01","excluded":15,"hold_reasons":[],"id":"FCAST-2026-03-01-001","included":3777,"inflows":14088519773,"min_cash":43663085427,"min_date":"2026-03-06","opening":44586781362,"outflows":10846616519,"rerun_reason":null,"scenario":"BASE","status":"APPROVED","supersedes":null,"threshold":3892504250},{"alerts":0,"cutoff":"2026-03-01","excluded":15,"hold_reasons":[],"id":"FCAST-2026-03-01-002","included":3537,"inflows":12781347409,"min_cash":43166546393,"min_date":"2026-03-06","opening":44586781362,"outflows":10607313900,"rerun_reason":null,"scenario":"DELAYED_RECEIPT","status":"APPROVED","supersedes":null,"threshold":3892504250},{"alerts":1,"cutoff":"2026-03-01","excluded":15,"hold_reasons":[],"id":"FCAST-2026-03-01-003","included":3299,"inflows":10111382122,"min_cash":40665468450,"min_date":"2026-03-19","opening":43005704462,"outflows":10579479181,"rerun_reason":null,"scenario":"STRESS","status":"APPROVED","supersedes":null,"threshold":3892504250},{"alerts":0,"cutoff":"2026-04-01","excluded":18,"hold_reasons":["BANKACC-ENT-000001-003: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000004-007: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000005-001: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000005-003: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000005-004: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000005-006: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000009-004: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000011-004: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000013-003: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000017-007: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000019-002: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000020-002: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000020-004: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000022-004: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000023-001: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000023-002: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000023-003: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000023-004: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000024-004: opening converted with STALE_FALLBACK FX rate"],"id":"FCAST-2026-04-01-001","included":3872,"inflows":12780978517,"min_cash":43311250921,"min_date":"2026-04-02","opening":44204369795,"outflows":12289626323,"rerun_reason":null,"scenario":"BASE","status":"EXECUTED","supersedes":null,"threshold":3892504250},{"alerts":0,"cutoff":"2026-04-01","excluded":18,"hold_reasons":["BANKACC-ENT-000001-003: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000004-007: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000005-001: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000005-003: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000005-004: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000005-006: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000009-004: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000011-004: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000013-003: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000017-007: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000019-002: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000020-002: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000020-004: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000022-004: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000023-001: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000023-002: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000023-003: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000023-004: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000024-004: opening converted with STALE_FALLBACK FX rate"],"id":"FCAST-2026-04-01-002","included":3649,"inflows":11625586272,"min_cash":42970414235,"min_date":"2026-04-16","opening":44204369795,"outflows":12113117432,"rerun_reason":null,"scenario":"DELAYED_RECEIPT","status":"EXECUTED","supersedes":null,"threshold":3892504250},{"alerts":1,"cutoff":"2026-04-01","excluded":18,"hold_reasons":["BANKACC-ENT-000001-003: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000004-007: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000005-001: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000005-003: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000005-004: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000005-006: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000009-004: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000011-004: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000013-003: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000017-007: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000019-002: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000020-002: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000020-004: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000022-004: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000023-001: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000023-002: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000023-003: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000023-004: opening converted with STALE_FALLBACK FX rate","BANKACC-ENT-000024-004: opening converted with STALE_FALLBACK FX rate"],"id":"FCAST-2026-04-01-003","included":3457,"inflows":9656024582,"min_cash":39054199690,"min_date":"2026-04-23","opening":42554751846,"outflows":12336789326,"rerun_reason":null,"scenario":"STRESS","status":"EXECUTED","supersedes":null,"threshold":3892504250},{"alerts":0,"cutoff":"2026-05-01","excluded":24,"hold_reasons":["BANKACC-ENT-000015-004: statement break on 2026-04-28 (21931.50 USD)"],"id":"FCAST-2026-05-01-001","included":3731,"inflows":12927842419,"min_cash":37445489099,"min_date":"2026-05-07","opening":41571804512,"outflows":14876711594,"rerun_reason":null,"scenario":"BASE","status":"EXECUTED","supersedes":null,"threshold":3892504250},{"alerts":0,"cutoff":"2026-05-01","excluded":24,"hold_reasons":["BANKACC-ENT-000015-004: statement break on 2026-04-28 (21931.50 USD)"],"id":"FCAST-2026-05-01-002","included":3455,"inflows":11460629877,"min_cash":36943621342,"min_date":"2026-05-07","opening":41571804512,"outflows":14602862600,"rerun_reason":null,"scenario":"DELAYED_RECEIPT","status":"EXECUTED","supersedes":null,"threshold":3892504250},{"alerts":1,"cutoff":"2026-05-01","excluded":24,"hold_reasons":["BANKACC-ENT-000015-004: statement break on 2026-04-28 (21931.50 USD)"],"id":"FCAST-2026-05-01-003","included":3241,"inflows":9191921651,"min_cash":33886644181,"min_date":"2026-05-21","opening":39955567358,"outflows":14668827652,"rerun_reason":null,"scenario":"STRESS","status":"EXECUTED","supersedes":null,"threshold":3892504250},{"alerts":0,"cutoff":"2026-06-01","excluded":32,"hold_reasons":["BANKACC-ENT-000011-003: statement break on 2026-05-26 (11714.76 USD)","BANKACC-ENT-000027-001: statement break on 2026-05-27 (11389.46 USD)"],"id":"FCAST-2026-06-01-001","included":3818,"inflows":14280463371,"min_cash":35410004870,"min_date":"2026-06-04","opening":35753271157,"outflows":10241446059,"rerun_reason":null,"scenario":"BASE","status":"SUPERSEDED","supersedes":null,"threshold":3892504250},{"alerts":0,"cutoff":"2026-06-01","excluded":32,"hold_reasons":["BANKACC-ENT-000011-003: statement break on 2026-05-26 (11714.76 USD)","BANKACC-ENT-000027-001: statement break on 2026-05-27 (11389.46 USD)"],"id":"FCAST-2026-06-01-002","included":3594,"inflows":13078931873,"min_cash":35083148136,"min_date":"2026-06-04","opening":35753271157,"outflows":10059793121,"rerun_reason":null,"scenario":"DELAYED_RECEIPT","status":"EXECUTED","supersedes":null,"threshold":3892504250},{"alerts":1,"cutoff":"2026-06-01","excluded":32,"hold_reasons":["BANKACC-ENT-000011-003: statement break on 2026-05-26 (11714.76 USD)","BANKACC-ENT-000027-001: statement break on 2026-05-27 (11389.46 USD)"],"id":"FCAST-2026-06-01-003","included":3304,"inflows":9979053102,"min_cash":32603896699,"min_date":"2026-06-18","opening":34167873335,"outflows":9907765672,"rerun_reason":null,"scenario":"STRESS","status":"EXECUTED","supersedes":null,"threshold":3892504250},{"alerts":0,"cutoff":"2026-06-01","excluded":32,"hold_reasons":["BANKACC-ENT-000011-003: statement break on 2026-05-26 (11714.76 USD)","BANKACC-ENT-000027-001: statement break on 2026-05-27 (11389.46 USD)"],"id":"FCAST-2026-06-01-004","included":3818,"inflows":14280463371,"min_cash":35410004870,"min_date":"2026-06-04","opening":35753271157,"outflows":10241446059,"rerun_reason":"Reviewer requested re-execution after FX exception review","scenario":"BASE","status":"EXECUTED","supersedes":"FCAST-2026-06-01-001","threshold":3892504250}],"validation":[{"failed":0,"failed_checks":[],"passed":141,"stage":"baseline_inputs_before_injection"},{"failed":0,"failed_checks":[],"passed":233,"stage":"baseline"},{"failed":9,"failed_checks":[{"failures":25,"id":"BUS-REC","name":"Statement closing = opening balance + cumulative bank statement lines"},{"failures":50,"id":"BUS-STMT","name":"Statement arithmetic and day-to-day continuity"},{"failures":10,"id":"BUS-FX","name":"FX rate coverage (business days x currencies)"},{"failures":15,"id":"BUS-CCY","name":"Currency equals account currency (no unconverted mixing)"},{"failures":20,"id":"BUS-DUPSRC","name":"Source allocation <= 100% (no double counting)"},{"failures":20,"id":"BUS-DUPITEM","name":"One forecast item per source instalment (no double counting)"},{"failures":15,"id":"BUS-CUT-ITEM","name":"Forecast item basis recorded before item known"},{"failures":15,"id":"BUS-REV","name":"Forecast item revision history is append-only and consistent"},{"failures":25,"id":"BUS-RECON","name":"Statement vs ledger differences are explained by reconciling items"}],"passed":223,"stage":"injected"}]}</script>
+<script>
+(function () {
+"use strict";
+var D = JSON.parse(document.getElementById("dash-data").textContent);
+var NS = "http://www.w3.org/2000/svg";
+var SC = ["BASE", "DELAYED_RECEIPT", "STRESS"];
+var SC_LABEL = {BASE: "Base", DELAYED_RECEIPT: "Delayed receipts", STRESS: "Stress"};
+var SC_COLOR = {BASE: "var(--series-1)", DELAYED_RECEIPT: "var(--series-2)", STRESS: "var(--series-3)"};
+var CAUSE_LABEL = {timing: "Timing", amount: "Amount", unforecast: "Unforecast", anomaly: "Bad data excluded",
+  fx_movement: "FX movement", residual: "Rounding"};
+var STATUS = {
+  APPROVED: ["var(--good)", "Approved"], EXECUTED: ["var(--warning)", "Held for review"],
+  SUPERSEDED: ["var(--text-muted)", "Superseded"], CRITICAL: ["var(--critical)", "Critical"],
+  WARNING: ["var(--warning)", "Warning"]
+};
+var MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+var state = {cutoff: D.cutoffs[D.cutoffs.length - 1]};
+
+function $(id) { return document.getElementById(id); }
+function svgEl(tag, attrs, parent) {
+  var e = document.createElementNS(NS, tag);
+  for (var k in attrs) e.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(e);
+  return e;
+}
+function h(tag, attrs, text, parent) {
+  var e = document.createElement(tag);
+  if (attrs) for (var k in attrs) e.setAttribute(k, attrs[k]);
+  if (text != null) e.textContent = text;
+  if (parent) parent.appendChild(e);
+  return e;
+}
+function usd(cents, dp) {
+  if (cents == null) return "–";
+  var v = cents / 100, a = Math.abs(v), s = v < 0 ? "−" : "";
+  if (a >= 1e9) return s + "$" + (a / 1e9).toFixed(dp == null ? 2 : dp) + "B";
+  if (a >= 1e6) return s + "$" + (a / 1e6).toFixed(dp == null ? 1 : dp) + "M";
+  if (a >= 1e3) return s + "$" + (a / 1e3).toFixed(dp == null ? 1 : dp) + "K";
+  return s + "$" + a.toFixed(0);
+}
+function minor(amount, ccy) {
+  var u = D.meta.minor_units[ccy] || 0, v = amount / Math.pow(10, u);
+  return (v < 0 ? "−" : "") + Math.abs(v).toLocaleString("en-US", {minimumFractionDigits: u, maximumFractionDigits: u}) + " " + ccy;
+}
+function count(n) { return n.toLocaleString("en-US"); }
+function pct(x) { return x.toFixed(1) + "%"; }
+function day(d) { var p = d.split("-"); return MONTHS[+p[1] - 1] + " " + (+p[2]); }
+function niceTicks(lo, hi, n) {
+  if (lo === hi) { lo -= 1; hi += 1; }
+  var step = Math.pow(10, Math.floor(Math.log10((hi - lo) / n))), err = (hi - lo) / n / step;
+  step *= err >= 7.5 ? 10 : err >= 3.5 ? 5 : err >= 1.5 ? 2 : 1;
+  var t = [], v = Math.floor(lo / step) * step;
+  for (; v <= hi + step * 0.5; v += step) t.push(v);
+  if (t[t.length - 1] < hi) t.push(t[t.length - 1] + step);
+  return t;
+}
+function badge(code, parent) {
+  var s = STATUS[code] || ["var(--text-muted)", code];
+  var b = h("span", {"class": "badge"}, null, parent);
+  var d = h("span", {"class": "dot"}, null, b); d.style.background = s[0];
+  h("span", null, s[1], b);
+  return b;
+}
+
+var tip = $("tip");
+function showTip(evt, head, rows) {
+  tip.textContent = "";
+  h("div", {"class": "hd"}, head, tip);
+  rows.forEach(function (r) {
+    var row = h("div", {"class": "row"}, null, tip);
+    if (r.color) { var k = h("span", {"class": "key"}, null, row); k.style.background = r.color; }
+    h("b", null, r.value, row);
+    if (r.name) h("span", null, r.name, row);
+  });
+  tip.style.display = "block";
+  var x, y;
+  if (evt && evt.clientX != null && evt.type.indexOf("pointer") === 0) { x = evt.clientX; y = evt.clientY; }
+  else { var bb = evt.target.getBoundingClientRect(); x = bb.left + bb.width / 2; y = bb.top; }
+  var w = tip.offsetWidth, ht = tip.offsetHeight;
+  var left = x + 14, top = y - ht - 10;
+  if (left + w > window.innerWidth - 8) left = x - w - 14;
+  if (left < 8) left = 8;
+  if (top < 8) top = y + 16;
+  tip.style.left = left + "px"; tip.style.top = top + "px";
+}
+function hideTip() { tip.style.display = "none"; }
+
+function legend(host, items) {
+  host.textContent = "";
+  items.forEach(function (it) {
+    var s = h("span", null, null, host);
+    var k = h("span", {"class": "key" + (it.ref ? " ref" : "")}, null, s);
+    if (!it.ref) k.style.background = it.color;
+    h("span", null, it.name, s);
+  });
+}
+
+function table(host, cols, rows, opts) {
+  host.textContent = "";
+  if (!rows.length) { h("div", {"class": "empty"}, (opts && opts.empty) || "Nothing to show.", host); return; }
+  var t = h("table", null, null, host), tr = h("tr", null, null, h("thead", null, null, t));
+  cols.forEach(function (c) { h("th", c.num ? {"class": "num"} : null, c.label, tr); });
+  var tb = h("tbody", null, null, t);
+  rows.forEach(function (r) {
+    var row = h("tr", opts && opts.sel && opts.sel(r) ? {"class": "sel"} : null, null, tb);
+    cols.forEach(function (c) {
+      var td = h("td", c.num ? {"class": "num"} : c.nowrap ? {"class": "nw"} : null, null, row);
+      var v = c.get(r);
+      if (v instanceof Node) td.appendChild(v); else td.textContent = v == null ? "–" : v;
+    });
+  });
+}
+
+// Line chart: crosshair snaps to the nearest date; the tooltip lists every series.
+function lineChart(host, cfg) {
+  host.textContent = "";
+  var W = Math.max(host.clientWidth, 280), H = cfg.height || 260, m = {l: 58, r: 12, t: 12, b: 26};
+  var vals = [];
+  cfg.series.forEach(function (s) { s.values.forEach(function (v) { if (v != null) vals.push(v); }); });
+  (cfg.refs || []).forEach(function (r) { vals.push(r.value); });
+  var ticks = niceTicks(Math.min.apply(null, vals), Math.max.apply(null, vals), 5);
+  var lo = ticks[0], hi = ticks[ticks.length - 1], n = cfg.dates.length;
+  function x(i) { return m.l + (n < 2 ? 0 : i * (W - m.l - m.r) / (n - 1)); }
+  function y(v) { return m.t + (hi - v) * (H - m.t - m.b) / (hi - lo); }
+  var svg = svgEl("svg", {viewBox: "0 0 " + W + " " + H, width: W, height: H, role: "img",
+    "aria-label": cfg.label + ". Use the left and right arrow keys to read values.", tabindex: 0}, host);
+  ticks.forEach(function (t) {
+    svgEl("line", {x1: m.l, x2: W - m.r, y1: y(t), y2: y(t), "class": t === lo ? "axis" : "grid"}, svg);
+    svgEl("text", {x: m.l - 8, y: y(t) + 4, "class": "tick", "text-anchor": "end"}, svg).textContent = usd(t, 0);
+  });
+  var lastX = -1e9;
+  cfg.xticks.forEach(function (i) {
+    if (x(i) - lastX < 48) return;
+    lastX = x(i);
+    svgEl("text", {x: x(i), y: H - 6, "class": "tick", "text-anchor": i === 0 ? "start" : i === n - 1 ? "end" : "middle"}, svg)
+      .textContent = day(cfg.dates[i]);
+  });
+  (cfg.marks || []).forEach(function (mk) {
+    svgEl("line", {x1: x(mk.index), x2: x(mk.index), y1: m.t, y2: H - m.b, style: "stroke:var(--text-secondary)", "stroke-width": 1}, svg);
+    svgEl("text", {x: x(mk.index) + 4, y: m.t + 10, "class": "reflab"}, svg).textContent = mk.name;
+  });
+  (cfg.refs || []).forEach(function (r) {
+    svgEl("line", {x1: m.l, x2: W - m.r, y1: y(r.value), y2: y(r.value), style: "stroke:var(--text-secondary)", "stroke-width": 1.5}, svg);
+    svgEl("text", {x: m.l + 4, y: y(r.value) - 5, "class": "reflab"}, svg).textContent = r.name + " " + usd(r.value);
+  });
+  cfg.series.forEach(function (s) {
+    var d = "", pen = false;
+    s.values.forEach(function (v, i) {
+      if (v == null) { pen = false; return; }
+      d += (pen ? "L" : "M") + x(i).toFixed(1) + " " + y(v).toFixed(1); pen = true;
+    });
+    svgEl("path", {d: d, fill: "none", style: "stroke:" + s.color, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round"}, svg);
+  });
+  var cross = svgEl("line", {y1: m.t, y2: H - m.b, style: "stroke:var(--axis)", "stroke-width": 1, visibility: "hidden"}, svg);
+  var dots = cfg.series.map(function (s) {
+    return svgEl("circle", {r: 4, style: "fill:" + s.color + ";stroke:var(--surface-1)", "stroke-width": 2, visibility: "hidden"}, svg);
+  });
+  var cur = -1;
+  function show(i, evt) {
+    cur = i;
+    cross.setAttribute("x1", x(i)); cross.setAttribute("x2", x(i)); cross.setAttribute("visibility", "visible");
+    var rows = [];
+    cfg.series.forEach(function (s, k) {
+      var v = s.values[i];
+      if (v == null) { dots[k].setAttribute("visibility", "hidden"); return; }
+      dots[k].setAttribute("cx", x(i)); dots[k].setAttribute("cy", y(v)); dots[k].setAttribute("visibility", "visible");
+      rows.push({color: s.color, value: usd(v), name: s.name});
+    });
+    showTip(evt, day(cfg.dates[i]) + " 2026", rows);
+  }
+  function hide() { cross.setAttribute("visibility", "hidden"); dots.forEach(function (d) { d.setAttribute("visibility", "hidden"); }); hideTip(); }
+  var ov = svgEl("rect", {x: m.l, y: m.t, width: W - m.l - m.r, height: H - m.t - m.b, fill: "transparent"}, svg);
+  ov.addEventListener("pointermove", function (e) {
+    var r = svg.getBoundingClientRect(), px = (e.clientX - r.left) * W / r.width;
+    show(Math.max(0, Math.min(n - 1, Math.round((px - m.l) / ((W - m.l - m.r) / Math.max(n - 1, 1))))), e);
+  });
+  ov.addEventListener("pointerleave", hide);
+  svg.addEventListener("keydown", function (e) {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault();
+    show(Math.max(0, Math.min(n - 1, (cur < 0 ? n - 1 : cur + (e.key === "ArrowLeft" ? -1 : 1)))), {target: svg, type: "key"});
+  });
+  svg.addEventListener("blur", hide);
+}
+
+// Horizontal bar chart from one baseline (zero); value at each bar's tip; each row is a focusable hit target.
+function barChart(host, cfg) {
+  host.textContent = "";
+  var W = Math.max(host.clientWidth, 260), rowH = 30, barH = 16, m = {l: cfg.labelWidth || 130, r: 8, t: 4, b: 4};
+  var H = m.t + m.b + rowH * cfg.rows.length;
+  var vals = cfg.rows.map(function (r) { return r.value; });
+  var lo = Math.min(0, Math.min.apply(null, vals)), hi = Math.max(0, Math.max.apply(null, vals));
+  var room = 64, left = lo < 0 ? room : 0, right = hi > 0 || lo === 0 ? room : 0;
+  var k = Math.max(W - m.l - m.r - left - right, 20) / ((hi - lo) || 1);
+  function x(v) { return m.l + left + (v - lo) * k; }
+  var svg = svgEl("svg", {viewBox: "0 0 " + W + " " + H, width: W, height: H, role: "img", "aria-label": cfg.label}, host);
+  svgEl("line", {x1: x(0), x2: x(0), y1: m.t, y2: H - m.b, "class": "axis"}, svg);
+  cfg.rows.forEach(function (r, i) {
+    var y0 = m.t + i * rowH, by = y0 + (rowH - barH) / 2;
+    svgEl("text", {x: m.l - 10, y: y0 + rowH / 2 + 4, "class": "rowlab", "text-anchor": "end"}, svg).textContent = r.label;
+    var hit = svgEl("rect", {x: 0, y: y0, width: W, height: rowH, "class": "hit", tabindex: 0,
+      "aria-label": r.label + ": " + cfg.fmt(r.value)}, svg);
+    var x0 = x(0), x1 = x(r.value), w = Math.abs(x1 - x0), rad = Math.min(4, w / 2), d;
+    if (w < 0.5) d = "M" + x0 + " " + by + "h0.5v" + barH + "h-0.5Z";
+    else if (r.value >= 0) d = "M" + x0 + " " + by + "H" + (x1 - rad) + "Q" + x1 + " " + by + " " + x1 + " " + (by + rad) +
+      "V" + (by + barH - rad) + "Q" + x1 + " " + (by + barH) + " " + (x1 - rad) + " " + (by + barH) + "H" + x0 + "Z";
+    else d = "M" + x0 + " " + by + "H" + (x1 + rad) + "Q" + x1 + " " + by + " " + x1 + " " + (by + rad) +
+      "V" + (by + barH - rad) + "Q" + x1 + " " + (by + barH) + " " + (x1 + rad) + " " + (by + barH) + "H" + x0 + "Z";
+    svgEl("path", {d: d, "class": "bar", style: "fill:" + cfg.color, "pointer-events": "none"}, svg);
+    var neg = r.value < 0;
+    svgEl("text", {x: neg ? x1 - 6 : x1 + 6, y: y0 + rowH / 2 + 4, "class": "val", "text-anchor": neg ? "end" : "start",
+      "pointer-events": "none"}, svg).textContent = cfg.fmt(r.value);
+    function tipOn(e) { showTip(e, r.label, [{color: cfg.color, value: cfg.fmt(r.value), name: r.note || ""}]); }
+    hit.addEventListener("pointermove", tipOn);
+    hit.addEventListener("focus", tipOn);
+    hit.addEventListener("pointerleave", hideTip);
+    hit.addEventListener("blur", hideTip);
+  });
+}
+
+function runsAt(c) { return D.runs.filter(function (r) { return r.cutoff === c; }); }
+function currentRun(c, s) {
+  return D.runs.filter(function (r) { return r.cutoff === c && r.scenario === s && r.status !== "SUPERSEDED"; })[0];
+}
+
+function renderMeta() {
+  var m = D.meta;
+  $("meta").textContent = (m.scale === "full" ? "Full" : "Starter") + " scale · seed " + m.seed + " · " + m.data_mode +
+    " data · reporting currency " + m.reporting_currency + " · " + m.start + " to " + m.end;
+  $("period-note").textContent = "Figures for the full period, " + m.start + " to " + m.end + "; not affected by the cutoff filter.";
+  $("foot").textContent = "Generated from this run's output files (config " + m.config_hash.slice(0, 12) +
+    "). Every value here is read from the exported CSV and JSON outputs listed in manifest.json.";
+  var seg = $("cutoffs");
+  D.cutoffs.forEach(function (c) {
+    var b = h("button", {type: "button", "aria-pressed": String(c === state.cutoff)}, day(c), seg);
+    b.addEventListener("click", function () {
+      state.cutoff = c;
+      Array.prototype.forEach.call(seg.children, function (x) { x.setAttribute("aria-pressed", String(x === b)); });
+      renderScoped();
+    });
+  });
+}
+
+function tile(host, label, value, delta, hero) {
+  var t = h("div", {"class": "tile" + (hero ? " hero" : "")}, null, host);
+  h("div", {"class": "label"}, label, t);
+  h("div", {"class": "value"}, value, t);
+  if (delta) h("div", {"class": "delta"}, delta, t);
+}
+
+function renderTiles() {
+  var host = $("tiles"), c = state.cutoff;
+  host.textContent = "";
+  var base = currentRun(c, "BASE"), stress = currentRun(c, "STRESS"), runs = runsAt(c).filter(function (r) { return r.status !== "SUPERSEDED"; });
+  var alerts = D.alerts.filter(function (a) { return runs.some(function (r) { return r.id === a.run; }); });
+  var held = runs.filter(function (r) { return r.status === "EXECUTED"; }).length;
+  tile(host, "Group cash at the " + day(c) + " cutoff", usd(base.opening, 2), "Opening position of the base forecast", true);
+  tile(host, "Lowest projected group cash, base", usd(base.min_cash), (base.min_cash / base.threshold).toFixed(1) + "× the policy minimum, on " + day(base.min_date));
+  tile(host, "Stress impact on lowest cash", usd(stress.min_cash - base.min_cash), "Stress vs base, lowest point in 30 days");
+  tile(host, "Liquidity alerts", count(alerts.length), alerts.length ? alerts.map(function (a) { return a.severity.toLowerCase() + ": " + a.scope; }).join(", ") : "No entity breaches its minimum");
+  tile(host, "Runs held for review", held + " of " + runs.length, held ? "See the reasons in the runs table" : "All runs approved");
+}
+
+function renderHistory() {
+  var g = D.group, idx = g.dates.indexOf(state.cutoff), ticks = [];
+  g.dates.forEach(function (d, i) { if (d.slice(8) === "01") ticks.push(i); });
+  $("hist-note").textContent = "Daily closing cash of all " + "accounts in USD, " + day(g.dates[0]) + " to " + day(g.dates[g.dates.length - 1]) + ". The vertical line marks the selected cutoff.";
+  lineChart($("c-history"), {dates: g.dates, xticks: ticks, label: "Group cash, actual, daily",
+    series: [{name: "Group cash", color: "var(--series-1)", values: g.cash}],
+    refs: [{name: "Policy minimum", value: g.threshold}],
+    marks: idx >= 0 ? [{index: idx, name: "Cutoff"}] : []});
+  table($("t-history"), [{label: "Month end", get: function (r) { return r[0]; }}, {label: "Group cash", num: 1, get: function (r) { return usd(r[1], 2); }}],
+    g.dates.map(function (d, i) { return [d, g.cash[i]]; }).filter(function (r, i, a) { return i === a.length - 1 || a[i + 1][0].slice(8) === "01"; }));
+}
+
+function renderForecast() {
+  var f = D.forecasts[state.cutoff];
+  $("fc-title").textContent = "Forecast vs actual from the " + day(state.cutoff) + " cutoff";
+  var series = [{name: "Actual", color: "var(--series-ink)", values: f.actual}];
+  SC.forEach(function (s) { if (f.runs[s]) series.push({name: SC_LABEL[s], color: SC_COLOR[s], values: f.runs[s].cash}); });
+  legend($("l-forecast"), series.map(function (s) { return {name: s.name, color: s.color}; }));
+  $("fc-note").textContent = "Projected group cash for each scenario against what actually happened. The policy minimum (" +
+    usd(D.group.threshold) + ") is far below this range, so the axis starts above it.";
+  var ticks = [];
+  for (var i = 0; i < f.dates.length; i += 7) ticks.push(i);
+  if (ticks[ticks.length - 1] !== f.dates.length - 1) ticks.push(f.dates.length - 1);
+  if (ticks.length > 1 && ticks[ticks.length - 1] - ticks[ticks.length - 2] < 4) ticks.splice(ticks.length - 2, 1);
+  lineChart($("c-forecast"), {dates: f.dates, xticks: ticks, label: "Projected and actual group cash for 30 days after the cutoff",
+    series: series});
+  table($("t-forecast"), [{label: "Date", get: function (r) { return r; }}].concat(series.map(function (s) {
+    return {label: s.name, num: 1, get: function (d) { return usd(s.values[f.dates.indexOf(d)], 2); }};
+  })), f.dates);
+}
+
+function renderVariance() {
+  var f = D.forecasts[state.cutoff], host = $("c-variance");
+  host.textContent = "";
+  var rows = [];
+  SC.forEach(function (s) {
+    var v = f.variance[s];
+    if (!v) return;
+    var box = h("div", null, null, host);
+    h("h3", null, SC_LABEL[s] + " · total " + usd(v.variance), box);
+    var chart = h("div", {"class": "chart"}, null, box);
+    var causes = ["timing", "amount", "unforecast", "anomaly", "fx_movement"];
+    barChart(chart, {label: "Causes of the day-30 gap, " + SC_LABEL[s], color: SC_COLOR[s], labelWidth: 118,
+      fmt: function (x) { return usd(x); },
+      rows: causes.map(function (k) { return {label: CAUSE_LABEL[k], value: v[k]}; })});
+    rows.push([s, v]);
+  });
+  table($("t-variance"), [{label: "Scenario", get: function (r) { return SC_LABEL[r[0]]; }}].concat(
+    ["variance", "timing", "amount", "unforecast", "anomaly", "fx_movement", "residual"].map(function (k) {
+      return {label: k === "variance" ? "Total" : CAUSE_LABEL[k], num: 1, get: function (r) { return usd(r[1][k], 2); }};
+    })), rows);
+}
+
+function renderRuns() {
+  var rows = runsAt(state.cutoff);
+  table($("t-runs"), [
+    {label: "Run", nowrap: 1, get: function (r) { return r.id; }},
+    {label: "Scenario", get: function (r) { return SC_LABEL[r.scenario]; }},
+    {label: "Status", get: function (r) {
+      var wrap = document.createElement("div");
+      badge(r.status, wrap);
+      var notes = r.status === "SUPERSEDED" ? [] : r.hold_reasons.slice(0, 3);
+      if (r.hold_reasons.length > 3 && r.status !== "SUPERSEDED") notes.push("and " + (r.hold_reasons.length - 3) + " more");
+      if (r.supersedes) notes.push("Re-run of " + r.supersedes + (r.rerun_reason ? ": " + r.rerun_reason : ""));
+      if (notes.length) { var ul = h("ul", {"class": "reasons"}, null, wrap); notes.forEach(function (n) { h("li", null, n, ul); }); }
+      return wrap;
+    }},
+    {label: "Lowest group cash", num: 1, get: function (r) { return usd(r.min_cash); }},
+    {label: "Lines used / excluded", num: 1, get: function (r) { return count(r.included) + " / " + count(r.excluded); }}
+  ], rows);
+}
+
+function renderAlerts() {
+  var ids = runsAt(state.cutoff).map(function (r) { return r.id; });
+  table($("t-alerts"), [
+    {label: "Severity", get: function (a) { return badge(a.severity, document.createElement("div")); }},
+    {label: "Entity", get: function (a) { return a.scope; }},
+    {label: "Run", nowrap: 1, get: function (a) { return a.run; }},
+    {label: "Lowest projected", num: 1, get: function (a) { return usd(a.min); }},
+    {label: "Minimum", num: 1, get: function (a) { return usd(a.threshold); }},
+    {label: "First breach", nowrap: 1, get: function (a) { return a.first_breach; }},
+    {label: "Days below", num: 1, get: function (a) { return a.days_below; }}
+  ], D.alerts.filter(function (a) { return ids.indexOf(a.run) >= 0; }), {empty: "No entity breaches its minimum cash at this cutoff."});
+}
+
+function renderPeriod() {
+  var A = D.accuracy, order = ["D01-07", "D08-14", "D15-21", "D22-30"];
+  var hz = order.filter(function (k) { return A.account_by_horizon[k]; });
+  $("acc-note").textContent = "Average error (MAPE) per account and day on the clean data, all scenarios, " + count(A.rows) + " forecast-vs-actual rows.";
+  barChart($("c-horizon"), {label: "Forecast error by horizon", color: "var(--series-1)", labelWidth: 96,
+    fmt: pct, rows: hz.map(function (k) { return {label: "Days " + k.slice(1).replace("-", "–").replace(/^0/, ""), value: A.account_by_horizon[k].mape_pct}; })});
+  table($("t-accuracy"), [
+    {label: "Scenario", get: function (s) { return SC_LABEL[s]; }},
+    {label: "Error per account", num: 1, get: function (s) { return pct(A.account_by_scenario[s].mape_pct); }},
+    {label: "Error, group", num: 1, get: function (s) { return pct(A.group_by_scenario[s].mape_pct); }},
+    {label: "Avg miss per account", num: 1, get: function (s) { return usd(A.account_by_scenario[s].mae * 100); }},
+    {label: "Bias", num: 1, get: function (s) { return usd(A.account_by_scenario[s].bias * 100); }}
+  ], SC.filter(function (s) { return A.account_by_scenario[s]; }));
+
+  var R = D.reconciliation, ST = [["MATCHED", "Matched"], ["TIMING_DIFFERENCE", "Late clearing"], ["BANK_ONLY", "Bank only"],
+    ["LEDGER_ONLY", "In transit"], ["UNMATCHED_BANK", "Unmatched bank"], ["UNMATCHED_LEDGER", "Unmatched ledger"]];
+  barChart($("c-recon"), {label: "Reconciliation items by status", color: "var(--series-1)", labelWidth: 118, fmt: count,
+    rows: ST.map(function (s) { return {label: s[1], value: R.items[s[0]] || 0}; })});
+  table($("t-recon-days"), [
+    {label: "Account-days", get: function (r) { return r[1]; }},
+    {label: "Count", num: 1, get: function (r) { return count(R.days[r[0]] || 0); }}
+  ], [["RECONCILED", "Reconciled (statement = ledger)"], ["RECONCILING_ITEM", "Difference fully explained"], ["BREAK", "Unexplained break"]]);
+  table($("t-breaks"), [
+    {label: "Account", get: function (b) { return b.account; }},
+    {label: "Date", get: function (b) { return b.date; }},
+    {label: "Unexplained", num: 1, get: function (b) { return minor(b.unexplained, b.currency); }}
+  ], R.breaks, {empty: "No unexplained breaks."});
+
+  var det = D.detection.by_type, types = Object.keys(det).filter(function (k) { return k !== "ALL"; }).sort();
+  var all = det.ALL;
+  $("det-note").textContent = all.tp + " of " + all.labels + " planted problems found, " + all.fp + " false alarms; " +
+    D.detection.clean_false_positives + " findings on the clean data.";
+  var nice = function (s) { return (s.charAt(0) + s.slice(1).toLowerCase().replace(/_/g, " ")).replace(/^Fx /, "FX "); };
+  table($("t-detection"), [
+    {label: "Problem", get: function (k) { return k === "ALL" ? "All" : nice(k); }},
+    {label: "Planted", num: 1, get: function (k) { return det[k].labels; }},
+    {label: "Found", num: 1, get: function (k) { return det[k].tp; }},
+    {label: "False alarms", num: 1, get: function (k) { return det[k].fp; }},
+    {label: "Missed", num: 1, get: function (k) { return det[k].fn; }}
+  ], types.concat(["ALL"]));
+
+  var E = D.exceptions, byIssue = {};
+  E.forEach(function (e) { byIssue[e.issue] = (byIssue[e.issue] || 0) + e.n; });
+  barChart($("c-exceptions"), {label: "Exception log entries by issue", color: "var(--series-1)", labelWidth: 150, fmt: count,
+    rows: Object.keys(byIssue).sort().map(function (k) { return {label: nice(k), value: byIssue[k]}; })});
+  table($("t-exceptions"), [
+    {label: "Rule", get: function (e) { return e.rule; }}, {label: "Issue", get: function (e) { return nice(e.issue); }},
+    {label: "Severity", get: function (e) { return nice(e.severity); }}, {label: "Decision", get: function (e) { return nice(e.decision); }},
+    {label: "Entries", num: 1, get: function (e) { return count(e.n); }}
+  ], E);
+
+  var STAGE = {baseline_inputs_before_injection: "Clean inputs, before injection", baseline: "Clean data + all outputs", injected: "Injected data + all outputs"};
+  table($("t-validation"), [
+    {label: "Stage", get: function (v) { return STAGE[v.stage] || v.stage; }},
+    {label: "Passed", num: 1, get: function (v) { return v.passed; }},
+    {label: "Failed", num: 1, get: function (v) { return v.failed; }},
+    {label: "Failed checks", get: function (v) { return v.failed_checks.map(function (c) { return c.id + " (" + c.failures + ")"; }).join(", ") || "None"; }}
+  ], D.validation);
+}
+
+function renderScoped() { renderTiles(); renderHistory(); renderForecast(); renderVariance(); renderRuns(); renderAlerts(); hideTip(); }
+
+renderMeta();
+renderScoped();
+renderPeriod();
+var lastW = window.innerWidth, timer = null;
+window.addEventListener("resize", function () {
+  if (window.innerWidth === lastW) return;
+  lastW = window.innerWidth;
+  clearTimeout(timer);
+  timer = setTimeout(function () { renderHistory(); renderForecast(); renderVariance(); renderPeriod(); }, 120);
+});
+})();
+</script>
+</body>
+</html>
