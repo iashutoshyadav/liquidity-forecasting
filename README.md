@@ -653,6 +653,7 @@ The full reasoning, rejected alternatives and costs are in [docs/decisions.md](d
 | Document | Covers |
 |---|---|
 | [docs/decisions.md](docs/decisions.md) | Design decisions, rejected alternatives, trade-offs, what's next |
+| [docs/prompt.md](docs/prompt.md) | How AI was used: who did what, where it helped, what I reviewed and validated, prompt history |
 | [docs/architecture.md](docs/architecture.md) | Pipeline, module responsibilities, design decisions, output layout |
 | [docs/data_dictionary.md](docs/data_dictionary.md) | Every table and field (generated from the schema) |
 | [docs/erd.md](docs/erd.md) | Relationships, cardinality, effective dates, lifecycle states |
