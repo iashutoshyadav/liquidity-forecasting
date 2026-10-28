@@ -18,6 +18,10 @@ FC-08 a re-run creates a new run id (next sequence for the cutoff) and supersede
 FC-10 cash-pool sweeps are projected with the same weekly rule as the actual sweeps (sweep_lines).
 FC-11 item values (expected date, amount, currency, basis) come from the latest revision known before
       cutoff (items_as_of); later revisions cannot change an earlier run.
+FC-12 recurring flows with no forecast item yet are estimated from activity recorded before cutoff
+      (run_rate_lines): payroll not yet booked = last payroll actual on the next pay day; small flows
+      (sundry, bank fees) = each account's net per business day over the lookback, on every business
+      day of the horizon. The same lines are used in every scenario.
 """
 from __future__ import annotations
 
@@ -181,8 +185,61 @@ def sweep_lines(accounts: pd.DataFrame, opening: pd.DataFrame, lines: pd.DataFra
     return pd.DataFrame(rows)
 
 
+def run_rate_lines(ds: Dataset, settings, cal, cutoff: pd.Timestamp) -> pd.DataFrame:
+    """FC-12: recurring flows that have no forecast item yet, estimated from data recorded before cutoff."""
+    rr = settings.forecast.get("run_rate") or {}
+    if not rr.get("enabled"):
+        return pd.DataFrame()
+    ts = pd.Timestamp(cutoff)
+    window_end = ts + pd.Timedelta(days=int(settings.forecast["horizon_days"]) - 1)
+    led, _ = split_ledger_by_currency(ds["ledger_entry"], ds["bank_account"])
+    known = led[led["recorded_at"] < ts]
+    ccy = ds["bank_account"].set_index("account_id")["currency"]
+    rows = []
+
+    def line(acct, kind, sid, d, amt, basis_id, basis_ts):
+        return {"cf_id": None, "revision_id": None, "account_id": acct, "source_type": "RUN_RATE", "source_id": sid,
+                "currency": ccy[acct], "flow_category": kind, "base_date": d, "base_amount_minor": amt,
+                "adjusted_date": d, "adjusted_amount_minor": amt, "settled_before_cutoff_minor": 0,
+                "assumption_ids": None, "basis_record_id": basis_id, "basis_recorded_at": basis_ts,
+                "line_status": "INCLUDED", "exclusion_reason": None, "known_at": basis_ts}
+
+    if rr.get("payroll"):
+        pay = known[known["entry_type"] == "PAYROLL"].sort_values(["account_id", "value_date", "ledger_entry_id"], kind="mergesort")
+        last = pay.drop_duplicates("account_id", keep="last")
+        actual_of = ds["actual_cash_flow"].set_index("ledger_entry_id")["actual_id"]
+        visible = items_as_of(ds["cash_flow_forecast"], ds["cash_flow_forecast_revision"], ts)
+        vp = visible[visible["flow_category"] == "PAYROLL"]
+        booked = set(zip(vp["account_id"], vp["expected_date"].dt.to_period("M")))
+        for m in pd.period_range(ts, window_end, freq="M"):
+            pay_day = pd.Timestamp(cal.roll_backward([pd.Timestamp(m.year, m.month, int(rr["payroll_day"]))])[0])
+            if not ts <= pay_day <= window_end:
+                continue
+            for r in last.itertuples(index=False):
+                if (r.account_id, m) not in booked:
+                    rows.append(line(r.account_id, "PAYROLL", f"RR-PAYROLL-{r.account_id}-{m.strftime('%Y%m')}", pay_day,
+                                     int(r.amount_minor), actual_of.get(r.ledger_entry_id, r.ledger_entry_id), r.recorded_at))
+
+    start = ts - pd.Timedelta(days=int(rr["lookback_days"]))
+    hist = known[known["entry_type"].isin(rr["entry_types"]) & (known["value_date"] >= start)]
+    n_hist = len(cal.business_days(start, ts - pd.Timedelta(days=1)))
+    days = [pd.Timestamp(d) for d in cal.business_days(ts, window_end)]
+    agg = hist.groupby("account_id").agg(net=("amount_minor", "sum"), last=("recorded_at", "max"))
+    for acct, r in agg.sort_index().iterrows():
+        per_day = money.div_half_even(int(r["net"]), n_hist) if n_hist else 0
+        if per_day == 0:
+            continue
+        basis = f"RUNRATE-{acct}-{start:%Y%m%d}-{ts:%Y%m%d}"
+        rows += [line(acct, "SUNDRY", f"RR-SUNDRY-{acct}-{d:%Y%m%d}", d, per_day, basis, r["last"]) for d in days]
+    out = pd.DataFrame(rows)
+    if len(out):
+        for c in ["base_date", "adjusted_date"]:
+            out[c] = pd.to_datetime(out[c]).astype("datetime64[ns]")
+    return out
+
+
 def execute_run(ds: Dataset, settings, cal, fx: FxLookup, spec: RunSpec, cand: pd.DataFrame,
-                opening: pd.DataFrame, input_hash: str) -> dict[str, pd.DataFrame]:
+                opening: pd.DataFrame, input_hash: str, recurring: pd.DataFrame | None = None) -> dict[str, pd.DataFrame]:
     rep = settings.reporting_currency
     mu = settings.minor_units
     H = int(settings.forecast["horizon_days"])
@@ -196,6 +253,8 @@ def execute_run(ds: Dataset, settings, cal, fx: FxLookup, spec: RunSpec, cand: p
     extra = one_off_line(settings, spec.code, ts, ds["bank_account"], fx, cal)
     if extra:
         lines = pd.concat([lines, pd.DataFrame([extra])], ignore_index=True)
+    if recurring is not None and len(recurring):
+        lines = pd.concat([lines, recurring], ignore_index=True)
     sweeps = sweep_lines(ds["bank_account"], opening, lines, cal, ts, window_end)
     if len(sweeps):
         lines = pd.concat([lines, sweeps], ignore_index=True)
@@ -287,8 +346,9 @@ def execute_all(ds: Dataset, settings, cal, fx: FxLookup, input_hash: str) -> tu
     parts: dict[str, list] = {}
     for spec in specs:
         if spec.cutoff not in cache:
-            cache[spec.cutoff] = (candidate_lines(ds, settings, cal, spec.cutoff), opening_balances(ds, spec.cutoff))
-        cand, opening = cache[spec.cutoff]
-        for k, v in execute_run(ds, settings, cal, fx, spec, cand, opening, input_hash).items():
+            cache[spec.cutoff] = (candidate_lines(ds, settings, cal, spec.cutoff), opening_balances(ds, spec.cutoff),
+                                  run_rate_lines(ds, settings, cal, spec.cutoff))
+        cand, opening, recurring = cache[spec.cutoff]
+        for k, v in execute_run(ds, settings, cal, fx, spec, cand, opening, input_hash, recurring).items():
             parts.setdefault(k, []).append(v)
     return {k: pd.concat(v, ignore_index=True) for k, v in parts.items()}, specs

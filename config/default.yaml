@@ -41,10 +41,14 @@ calendar:
 fx:
   quotation: "1 unit of base_currency = rate units of quote_currency; quote is always the reporting currency"
   initial_rates: {EUR: "1.08000000", GBP: "1.27000000", INR: "0.01200000", JPY: "0.00670000"}
-  annual_volatility: {EUR: 0.07, GBP: 0.08, INR: 0.05, JPY: 0.10}
-  shocks:
-    - {date: "2026-03-16", currency: INR, pct: "-4.0", reason: "Synthetic emerging-market sell-off"}
-    - {date: "2026-05-11", currency: JPY, pct: "3.5", reason: "Synthetic policy surprise"}
+  # Used ONLY when external_data.fx_source = synthetic (or --data-mode synthetic). In hybrid mode the
+  # pinned Kaggle rates are loaded unchanged and this block is ignored (the run log says so); scenario
+  # FX shocks (scenarios.yaml fx_shock_bp) apply in both modes.
+  synthetic_walk:
+    annual_volatility: {EUR: 0.07, GBP: 0.08, INR: 0.05, JPY: 0.10}
+    shocks:
+      - {date: "2026-03-16", currency: INR, pct: "-4.0", reason: "Synthetic emerging-market sell-off"}
+      - {date: "2026-05-11", currency: JPY, pct: "3.5", reason: "Synthetic policy surprise"}
   max_fallback_business_days: 5      # stale-rate fallback window for a missing business-day rate
 
 generation:
@@ -134,10 +138,18 @@ forecast:
   horizon_days: 30
   overdue_receivable_roll_days: 7
   overdue_payable_roll_days: 0
-  liquidity_policy_months: "0.5"     # entity minimum cash = 0.5 x monthly revenue (reporting ccy)
+  liquidity_policy_months: "1.5"     # entity minimum cash = 1.5 x monthly revenue (reporting ccy); within the
+                                     # 1-3 months of cover common in minimum-liquidity policies (was 0.5: only the
+                                     # STRESS one-off could ever breach it, see README section 15)
   approval_policy:                   # RUN-01: what holds a run for review instead of approving it
     balance_break_lookback_days: 7   # only statement breaks this close to the cutoff can affect the run
     balance_break_materiality_reporting_minor: 100000   # 1,000.00 USD; smaller breaks do not hold
+  run_rate:                          # FC-12: recurring flows that have no forecast item yet at the cutoff
+    enabled: true
+    lookback_days: 56                # small flows: net per business day over the previous 8 weeks
+    entry_types: [SUNDRY_RECEIPT, SUNDRY_PAYMENT, BANK_FEE]
+    payroll: true                    # payroll not yet booked: last payroll actual on the next pay day
+    payroll_day: 25                  # published pay day (PAY-04), previous business day if not one
   reruns:
     - {cutoff_date: "2026-06-01", scenario_code: BASE, actor_role: RISK_REVIEWER,
        reason: "Reviewer requested re-execution after FX exception review"}

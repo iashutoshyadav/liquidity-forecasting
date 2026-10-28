@@ -235,8 +235,10 @@ def derived_checks(t: dict[str, pd.DataFrame], d: dict[str, pd.DataFrame], setti
     basis_ts = inc["basis_record_id"].map(act_rec).fillna(inc["basis_record_id"].map(rev_known))
     rev_ok = inc["revision_id"].isna() | (inc["revision_id"].map(rev_known) < inc["cutoff"])
     known = inc["cf_id"].map(cf_known)
-    derived_line = inc["source_type"].isin(["SCENARIO", "SWEEP"])
+    derived_line = inc["source_type"].isin(["SCENARIO", "SWEEP", "RUN_RATE"])
     bad = ~derived_line & ((basis_ts >= inc["cutoff"]) | (known >= inc["cutoff"]) | basis_ts.isna() | ~rev_ok)
+    run_rate = inc["source_type"].eq("RUN_RATE")
+    bad |= run_rate & ~(pd.to_datetime(inc["basis_recorded_at"]) < inc["cutoff"])
     fails = [(l, "", "", "line uses information recorded after cutoff") for l in inc.loc[bad, "line_id"]]
     ra = d["forecast_run_account"]
     led = t["ledger_entry"]
@@ -368,6 +370,11 @@ def scenario_check(t, d, settings, cal) -> CheckResult:
                         or s["exclusion_reason"] != b["exclusion_reason"] and not (pd.isna(s["exclusion_reason"]) and pd.isna(b["exclusion_reason"]))):
                     fails.append((f"{r.forecast_run_id}|{cid}", f"{s['adjusted_date']:%Y-%m-%d}/{s['adjusted_amount_minor']}",
                                   f"{exp_date:%Y-%m-%d}/{exp_amt}", "undocumented scenario difference"))
+            key = ["account_id", "source_id", "adjusted_date", "adjusted_amount_minor"]
+            b_rr = lines.loc[(lines["forecast_run_id"] == base_id) & (lines["source_type"] == "RUN_RATE"), key]
+            s_rr = sl.loc[sl["source_type"] == "RUN_RATE", key]
+            if not b_rr.reset_index(drop=True).equals(s_rr.reset_index(drop=True)):
+                fails.append((r.forecast_run_id, len(s_rr), len(b_rr), "run-rate lines differ from BASE"))
             extra = sl[sl["source_type"] == "SCENARIO"]
             want = 1 if p["one_off_payment"] else 0
             if len(extra) != want:

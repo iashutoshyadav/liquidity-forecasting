@@ -1,4 +1,5 @@
-"""CurrencyRate generation: business-day geometric random walk per currency + configured shocks."""
+"""CurrencyRate generation: pinned external rates (hybrid) or a business-day geometric random walk
+per currency + configured shocks (synthetic; fx.synthetic_walk)."""
 from __future__ import annotations
 
 from decimal import Decimal
@@ -17,6 +18,16 @@ def generate_rates(ctx: GenContext) -> pd.DataFrame:
     if s.external["fx_source"] == "kaggle":
         return load_external_rates(ctx, bdays)
     return _synthetic_rates(ctx, bdays)
+
+
+def fx_source_note(settings) -> str:
+    """One-line statement of where rates come from and which configured FX settings are ignored."""
+    walk = settings.raw["fx"]["synthetic_walk"]
+    if settings.external["fx_source"] == "kaggle":
+        return (f"FX rates: pinned external file {settings.external['fx_file']} (real market moves); "
+                f"fx.synthetic_walk ignored ({len(walk.get('shocks', []))} configured shocks not applied)")
+    shocks = ", ".join(f"{x['currency']} {x['pct']}% on {x['date']}" for x in walk.get("shocks", [])) or "none"
+    return f"FX rates: synthetic random walk with configured shocks ({shocks})"
 
 
 def load_external_rates(ctx: GenContext, bdays) -> pd.DataFrame:
@@ -45,15 +56,16 @@ def load_external_rates(ctx: GenContext, bdays) -> pd.DataFrame:
 def _synthetic_rates(ctx: GenContext, bdays) -> pd.DataFrame:
     s = ctx.settings
     fx = s.raw["fx"]
+    walk = fx["synthetic_walk"]
     rep = s.reporting_currency
     dt = 1.0 / 252.0
     frames = []
     for ccy in sorted(fx["initial_rates"]):
         rng = ctx.rng(f"fx:{ccy}")
-        sigma = float(fx["annual_volatility"][ccy])
+        sigma = float(walk["annual_volatility"][ccy])
         steps = rng.normal(-0.5 * sigma**2 * dt, sigma * np.sqrt(dt), len(bdays))
         steps[0] = 0.0
-        for shock in fx.get("shocks", []):
+        for shock in walk.get("shocks", []):
             if shock["currency"] == ccy:
                 pos = np.searchsorted(bdays, np.datetime64(shock["date"]))
                 if pos < len(bdays):

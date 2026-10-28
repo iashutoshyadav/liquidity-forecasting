@@ -22,7 +22,7 @@ Rule IDs appear in code docstrings, `variance_attribution.rule_id` and `exceptio
 | ID | Rule |
 |---|---|
 | ENT-01 | The first five entities are incorporated in US, DE, GB, IN and JP, so all five functional currencies exist. The rest are drawn by country weights. Planned monthly revenue is lognormal (median 2,000,000 USD, σ = 0.7), clipped to [0.3M, 15M]. |
-| ENT-02 | Minimum liquidity policy = `liquidity_policy_months` (0.5) × monthly revenue, in USD cents. |
+| ENT-02 | Minimum liquidity policy = `liquidity_policy_months` (1.5) × monthly revenue, in USD cents. Raised from 0.5, at which entities' lowest projected cash was a median 8× the minimum and only the STRESS one-off payment could breach it. |
 | ACC-01 | Every entity has at least OPERATING, COLLECTION and DISBURSEMENT accounts. Extra accounts (up to 8 in total) are allocated by √size. OPERATING and PAYROLL accounts use the functional currency; others are foreign with 40% probability. All five currencies are guaranteed. |
 | ACC-02 | Dormancy applies only to RESERVE accounts, on a business day in the dormant window. There is no ledger activity on or after the dormancy date. |
 | RCV-01 | due_date = next business day on/after invoice_date + terms (30/45/60 days). |
@@ -70,6 +70,7 @@ Rule IDs appear in code docstrings, `variance_attribution.rule_id` and `exceptio
 | FC-02 | Run opening balance = account opening + ledger entries recorded before cutoff, excluding quarantined entries (BAL-02). |
 | FC-10 | Forecast runs project the weekly cash-pool sweeps with the LED-07 rule, using the opening balance known at cutoff and the run's own lines (`forecast_run_line.source_type = SWEEP`). |
 | FC-11 | A forecast run reads each item's **latest revision known strictly before the cutoff** (`forecast_run.items_as_of`). Later revisions can't change an earlier run. `forecast_run_line.revision_id` records the version used. |
+| FC-12 | **Run-rate estimate** for recurring flows that have no forecast item at the cutoff (`forecast_run.run_rate_lines`, `source_type = RUN_RATE`). Payroll not yet booked: the account's last payroll actual recorded before the cutoff, on the next pay day (25th, previous business day) in the horizon, skipped when a payroll item for that month is already known. Small flows (sundry receipts and payments, bank fees): the account's net over the 56 days before the cutoff divided by the business days in that period (half-even), on every business day of the horizon. Only entries recorded before the cutoff are used, and the lines are identical in every scenario (checked by `BUS-CUTOFF-RUN` and `BUS-SCN`). Configurable under `forecast.run_rate`. |
 | FC-03 | Candidate items are known before cutoff and not cancelled or written off before cutoff. Remaining = amount − settlements recorded before cutoff; any settlement closes a payroll item. |
 | FC-04 | Overdue unsettled items are re-dated: receivables to cutoff + 7 days, payables to cutoff (next business day). |
 | FC-05 | Guards: CUTOFF_LEAKAGE, MIXED_CURRENCY and DUPLICATE_CASH_FLOW lines are EXCLUDED with a reason and logged. A duplicate is a second item for the same (source_type, source_id, instalment_no), or a link that pushes a source's allocation above 100%, whether or not the item has a source link. It is judged against every item known before the cutoff, including settled ones. The surviving item is the one with settlements recorded before the cutoff, otherwise the earliest (known_at, cf_id). |
@@ -86,7 +87,7 @@ Rule IDs appear in code docstrings, `variance_attribution.rule_id` and `exceptio
 |---|---|---|
 | VAR-TIM | TIMING | Included item: −f at the forecast date, +f at the first actual date. Also covers an actual for an item known before cutoff but forecast outside this window. |
 | VAR-AMT | AMOUNT | Included item: + actual amounts, −f at the first actual date. Items that will never settle (written off, cancelled, or scenario-only): −f at the forecast date. |
-| VAR-UNF | UNFORECAST | Ledger entries without a forecast item, or items known after cutoff. Grouped per account and day; source = `account|date`. |
+| VAR-UNF | UNFORECAST | Ledger entries without a forecast item, or items known after cutoff, grouped per account and day (source = `account|date`), minus the FC-12 run-rate estimate for them (source type `RUN_RATE_ESTIMATE`, one row per estimate line). What remains is the part the estimate didn't anticipate. |
 | VAR-ANO | ANOMALY | Actuals of items the detector flagged, which were therefore excluded from the run. |
 | VAR-AMT (pool) | AMOUNT | Cash-pool sweeps, projected (`SWEEP` lines) and actual (INTERNAL_TRANSFER entries), with source `CASH_POOL_SWEEP`. They reallocate variance within a pool and net to zero per pool. |
 | VAR-FX | FX_MOVEMENT | A × rate(d) − A × run rate (reporting currency). |

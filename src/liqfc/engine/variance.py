@@ -10,7 +10,8 @@ VAR-TIM  TIMING      included item: -f at forecast date, +f at first actual date
                      actual of an item known before C but not forecast in the window: +a
 VAR-AMT  AMOUNT      included item: +actual amounts, -f at first actual date; items that will
                      never settle (written off / cancelled / scenario-only): -f at forecast date
-VAR-UNF  UNFORECAST  ledger entries with no forecast item, or items known after C (grouped per account/day)
+VAR-UNF  UNFORECAST  ledger entries with no forecast item, or items known after C (grouped per account/day),
+                     minus the run-rate estimate for them (FC-12 lines: -f at forecast date)
 VAR-ANO  ANOMALY     actuals of items flagged by the anomaly detector (excluded from the run)
 Cash-pool sweeps (projected sweep lines and actual INTERNAL_TRANSFER entries) are AMOUNT with source
 CASH_POOL_SWEEP; within a pool they net to zero.
@@ -34,6 +35,7 @@ EXPLAIN = {
     ("TIMING", "LEDGER_ENTRY"): "Actual of an item known before cutoff but forecast outside this window",
     ("ANOMALY", "LEDGER_ENTRY"): "Actual of an item excluded because the anomaly detector flagged it",
     ("UNFORECAST", "LEDGER_GROUP"): "Ledger activity with no forecast item (fees, interest, sundry, new items)",
+    ("UNFORECAST", "RUN_RATE_ESTIMATE"): "Run-rate estimate of recurring flows with no forecast item (payroll not yet booked, sundry, fees)",
     ("AMOUNT", "CASH_POOL_SWEEP"): "Cash-pool sweep, projected vs actual (reallocates variance within the pool; nets to zero per pool)",
 }
 RULE = {"TIMING": "VAR-TIM", "AMOUNT": "VAR-AMT", "UNFORECAST": "VAR-UNF", "ANOMALY": "VAR-ANO"}
@@ -57,6 +59,9 @@ def attribute_run(run: pd.Series, lines: pd.DataFrame, ledger: pd.DataFrame, act
     first_actual = new[new["cf_id"].isin(in_run)].groupby("cf_id")["eff"].min()
     for r in inc.itertuples(index=False):
         f = int(r.adjusted_amount_minor)
+        if r.source_type == "RUN_RATE":
+            rows.append((r.account_id, "UNFORECAST", r.adjusted_date, -f, "RUN_RATE_ESTIMATE", r.source_id, 1))
+            continue
         is_scn = r.source_type in ("SCENARIO", "SWEEP")
         src_t = {"SCENARIO": "SCENARIO_ASSUMPTION", "SWEEP": "CASH_POOL_SWEEP"}.get(r.source_type, "CASH_FLOW_FORECAST")
         src = r.source_id if is_scn else r.cf_id

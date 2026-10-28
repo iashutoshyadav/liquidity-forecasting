@@ -13,16 +13,101 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
+from liqfc.core import money
+from liqfc.engine.fx_conversion import convert_to_reporting
 from liqfc.exporters.csv_json import write_text
 
 SCENARIOS = ["BASE", "DELAYED_RECEIPT", "STRESS"]
 CAUSES = ["timing", "amount", "unforecast", "anomaly", "fx_movement", "residual"]
+EFFECTS = ["delay", "haircut", "one_off", "fx"]
+TOP_N = 10
 
 
-def _csv(out: Path, name: str) -> pd.DataFrame:
-    return pd.read_csv(out / "dataset" / "derived" / "csv" / f"{name}.csv", keep_default_na=False, na_values=[""])
+def _csv(out: Path, name: str, part: str = "derived") -> pd.DataFrame:
+    return pd.read_csv(out / "dataset" / part / "csv" / f"{name}.csv", keep_default_na=False, na_values=[""])
+
+
+def _to_usd(amounts, currencies, rate_texts, settings) -> list[int]:
+    """Local minor units to reporting minor units at the run's applied rates (0 where no rate)."""
+    rates = [None if pd.isna(t) else money.parse_rate(t) for t in rate_texts]
+    conv = convert_to_reporting(list(amounts), list(currencies), rates, settings.minor_units, settings.reporting_currency)
+    return [0 if v is None else int(v) for v in conv]
+
+
+def _scenario_effects(lines, run_acc, acct_entity, rid, base_rid, settings) -> dict:
+    """Day-30 cash effect of each scenario assumption per entity, in reporting minor units.
+
+    delay: customer receipts the scenario delays (and cuts); haircut: receipts only cut; one_off: the
+    scenario-only payment; fx: change in the opening balances' reporting value from the FX shock.
+    """
+    a = run_acc[run_acc["forecast_run_id"] == rid].set_index("account_id")
+    l = lines[lines["forecast_run_id"] == rid]
+    ids = l["assumption_ids"].fillna("")
+    kind = np.select([l["source_type"].eq("SCENARIO"), ids.str.contains("-01"), ids.str.contains("-03")],
+                     ["one_off", "delay", "haircut"], "")
+    l = l[kind != ""].assign(kind=kind[kind != ""])
+    kept = np.where(l["line_status"] == "INCLUDED", l["adjusted_amount_minor"], 0)
+    base = np.where(l["source_type"] == "SCENARIO", 0, l["base_amount_minor"])
+    usd = _to_usd(kept - base, l["currency"], l["account_id"].map(a["fx_rate_applied"]), settings)
+    eff = pd.DataFrame({"entity": l["account_id"].map(acct_entity).to_numpy(), "kind": l["kind"].to_numpy(), "usd": usd})
+    out: dict = {}
+    for (e, k), v in eff.groupby(["entity", "kind"])["usd"].sum().items():
+        out.setdefault(e, {})[k] = int(v)
+    opening = run_acc.assign(entity=run_acc["account_id"].map(acct_entity)).groupby(
+        ["forecast_run_id", "entity"])["opening_balance_reporting_minor"].sum()
+    for e, v in (opening.loc[rid] - opening.loc[base_rid]).items():
+        if v:
+            out.setdefault(e, {})["fx"] = int(v)
+    return out
+
+
+def _top_errors(va, run_acc, acct_entity, cf, actuals, rid, settings) -> list[dict]:
+    """Largest contributors to the day-30 gap of one run, in reporting units.
+
+    Rows are netted per source before ranking: a settlement's ledger entry counts against its forecast
+    item, and a run-rate estimate against the same account-day's unforecast activity, so a forecast
+    that was right doesn't show up as two large offsetting rows. The cause shown is the category with
+    the largest net amount within the source.
+    """
+    v = va[(va["forecast_run_id"] == rid) & (va["source_type"] != "CASH_POOL_SWEEP")].copy()
+    key = v["source_id"].copy()
+    led = v["source_type"].eq("LEDGER_ENTRY")
+    key[led] = v.loc[led, "source_id"].map(actuals.set_index("ledger_entry_id")["cf_id"]).fillna(v.loc[led, "source_id"])
+    rr = v["source_type"].eq("RUN_RATE_ESTIMATE")
+    key[rr] = v.loc[rr, "account_id"] + "|" + v.loc[rr, "effective_date"].astype(str)
+    v["key"] = key
+    a = run_acc[run_acc["forecast_run_id"] == rid].set_index("account_id")
+    v["usd"] = _to_usd(v["amount_minor"], v["account_id"].map(a["currency"]), v["account_id"].map(a["fx_rate_applied"]), settings)
+    tot = v.groupby("key").agg(usd=("usd", "sum"), first=("effective_date", "min"), account=("account_id", "first"))
+    tot = tot[tot["usd"] != 0].assign(size=lambda t: t["usd"].abs()).reset_index()
+    tot = tot.sort_values(["size", "key"], ascending=[False, True], kind="mergesort").head(TOP_N)
+    by_cat = v.groupby(["key", "category"])["usd"].sum()
+    entries = v[v["source_type"] == "LEDGER_GROUP"].groupby("key")["source_count"].sum()
+    estimated = set(v.loc[rr, "key"])
+    item = cf.set_index("cf_id")
+    rows = []
+    for r in tot.itertuples(index=False):
+        cats = by_cat.loc[r.key]
+        cause = cats.abs().sort_values(ascending=False, kind="mergesort").index[0]
+        if r.key in item.index:
+            it = item.loc[r.key]
+            detail = f"forecast item: {it['flow_category'].replace('_', ' ').lower()} · {it['source_id']}"
+            explanation = {"TIMING": "Settled on a different date than forecast, or after the horizon",
+                           "AMOUNT": "Settled for a different amount than forecast, or will not settle",
+                           "ANOMALY": "Excluded from the forecast as bad data; its settlement still moved cash"}.get(cause, cause)
+        elif "|" in r.key:
+            n = int(entries.get(r.key, 0))
+            detail = f"{n} ledger entries" + (", net of the run-rate estimate" if r.key in estimated else "")
+            explanation = "Cash moved with no forecast item" + (" beyond the run-rate estimate" if r.key in estimated else "")
+        else:
+            detail = None
+            explanation = v.loc[v["key"] == r.key, "explanation"].iloc[0]
+        rows.append({"category": cause, "source_id": r.key, "detail": detail, "account": r.account,
+                     "entity": acct_entity.get(r.account), "date": r.first, "usd": int(r.usd), "explanation": explanation})
+    return rows
 
 
 def _int(v):
@@ -65,15 +150,24 @@ def collect(out: Path, settings) -> dict:
     current = {(r["cutoff"], r["scenario"]): r["id"] for r in runs if r["status"] != "SUPERSEDED"}
     cutoffs = sorted({r["cutoff"] for r in runs})
 
-    fcp = _csv(out, "forecast_consolidated_position")
-    fcp = fcp[fcp["level"] == "GROUP"].sort_values(["forecast_run_id", "forecast_date"])
+    fcp_all = _csv(out, "forecast_consolidated_position").sort_values(["forecast_run_id", "scope_id", "forecast_date"])
+    fcp = fcp_all[fcp_all["level"] == "GROUP"]
+    fcp_ent = fcp_all[fcp_all["level"] == "ENTITY"]
+    accounts = _csv(out, "bank_account", "input")
+    acct_entity = dict(zip(accounts["account_id"], accounts["entity_id"]))
+    run_acc = _csv(out, "forecast_run_account")
+    lines = _csv(out, "forecast_run_line")
+    va = _csv(out, "variance_attribution")
+    cf = _csv(out, "cash_flow_forecast", "input")
+    actuals = _csv(out, "actual_cash_flow", "input")
     comp = _csv(out, "forecast_comparison")
     last = comp[comp["horizon_day"] == comp.groupby("forecast_run_id")["horizon_day"].transform("max")]
     cols = ["variance"] + CAUSES
     var = last.groupby("forecast_run_id")[[f"{c}_reporting_minor" for c in cols]].sum()
     forecasts = {}
     for c in cutoffs:
-        entry = {"runs": {}, "variance": {}}
+        entry = {"runs": {}, "variance": {}, "entity": {}, "effects": {}}
+        base_rid = current.get((c, "BASE"))
         for s in SCENARIOS:
             rid = current.get((c, s))
             if rid is None:
@@ -83,8 +177,19 @@ def collect(out: Path, settings) -> dict:
             entry["runs"][s] = {"id": rid, "cash": [int(v) for v in f["closing_reporting_minor"]]}
             if rid in var.index:
                 entry["variance"][s] = {k: int(var.at[rid, f"{k}_reporting_minor"]) for k in cols}
+            fe = fcp_ent[fcp_ent["forecast_run_id"] == rid]
+            entry["entity"][s] = {e: [int(v) for v in g["closing_reporting_minor"]] for e, g in fe.groupby("scope_id")}
+            if s != "BASE" and base_rid is not None:
+                entry["effects"][s] = _scenario_effects(lines, run_acc, acct_entity, rid, base_rid, settings)
+        entry["top_errors"] = _top_errors(va, run_acc, acct_entity, cf, actuals, base_rid, settings) if base_rid else []
         entry["actual"] = [cash_by_date.get(d) for d in entry.get("dates", [])]
         forecasts[c] = entry
+
+    ents = _csv(out, "legal_entity", "input").sort_values("entity_id")
+    entities = [{"id": e.entity_id, "name": e.entity_name, "currency": e.functional_currency,
+                 "min": int(e.min_liquidity_reporting_minor)} for e in ents.itertuples(index=False)]
+    ent_pos = cons[cons["level"] == "ENTITY"].sort_values(["scope_id", "position_date"])
+    entity_actual = {e: [int(v) for v in g["closing_balance_reporting_minor"]] for e, g in ent_pos.groupby("scope_id")}
 
     alerts = [{"id": a.alert_id, "run": a.forecast_run_id, "level": a.level, "scope": a.scope_id,
                "threshold": int(a.threshold_reporting_minor), "min": int(a.min_projected_reporting_minor),
@@ -111,6 +216,7 @@ def collect(out: Path, settings) -> dict:
                  "end": str(settings.end.date()), "config_hash": runs_df["config_hash"].iloc[0],
                  "minor_units": settings.minor_units},
         "group": group, "runs": runs, "cutoffs": cutoffs, "forecasts": forecasts, "alerts": alerts,
+        "entities": entities, "entity_actual": entity_actual,
         "reconciliation": {
             "items": {k: int(v) for k, v in item_counts.items()},
             "days": {k: int(v) for k, v in day_counts.items()}, "breaks": breaks},
@@ -233,6 +339,11 @@ th { color: var(--text-secondary); font-weight: 600; }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 td.nw { white-space: nowrap; }
 #t-runs table { min-width: 640px; }
+#t-top table { min-width: 760px; }
+select { font: inherit; color: var(--text-primary); background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: 8px; padding: 6px 8px; max-width: 100%; }
+.grid2.inner { margin-top: 0; }
+td.neg { color: var(--critical); }
 #t-alerts table, #t-accuracy table, #t-detection table { min-width: 460px; }
 tr.sel td { background: var(--wash); }
 .badge { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
@@ -255,6 +366,8 @@ footer { margin-top: 32px; color: var(--text-muted); font-size: 12px; }
   <div class="filters" role="group" aria-label="Forecast cutoff">
     <span class="lab">Forecast cutoff</span>
     <div class="seg" id="cutoffs"></div>
+    <label class="lab" for="entity" style="margin-left:12px">Entity</label>
+    <select id="entity"></select>
   </div>
 
   <section class="tiles" id="tiles" aria-live="polite"></section>
@@ -275,9 +388,34 @@ footer { margin-top: 32px; color: var(--text-muted); font-size: 12px; }
 
   <section class="card">
     <header><h2>What explains the gap on the last forecast day</h2>
-      <p class="note">Actual minus forecast group cash on day 30, split into causes (USD). Positive means more cash than forecast. The causes add up to the total.</p></header>
+      <p class="note">Actual minus forecast group cash on day 30, split into causes (USD). Positive means more cash than forecast. Unforecast is net of the run-rate estimate for payroll not yet booked and small flows. The causes add up to the total.</p></header>
     <div class="grid3" id="c-variance"></div>
     <details><summary>Show table</summary><div class="tablewrap" id="t-variance"></div></details>
+  </section>
+
+  <section class="card">
+    <header><h2 id="ent-title">Entity drill-down</h2><p class="note" id="ent-note"></p></header>
+    <div class="grid2 inner">
+      <div>
+        <h3>Projected cash vs actual</h3>
+        <div class="legend" id="l-entity"></div>
+        <div class="chart" id="c-entity"></div>
+        <details><summary>Show table</summary><div class="tablewrap" id="t-entity"></div></details>
+      </div>
+      <div>
+        <h3>What each scenario changes for this entity (cash on day 30)</h3>
+        <div class="tablewrap" id="t-effects"></div>
+        <p class="note" style="margin-top:8px">Negative values reduce cash. Delayed receipts that still arrive inside the 30 days
+          only change the path, not day 30. FX shock is the change in the USD value of the opening balances.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <header><h2>Largest contributors to the day-30 gap, base forecast</h2>
+      <p class="note">Each source's net contribution to actual minus forecast cash on the last forecast day, in USD (cash-pool sweeps excluded:
+        they net to zero within a pool). Positive means more cash than forecast.</p></header>
+    <div class="tablewrap" id="t-top"></div>
   </section>
 
   <div>
@@ -344,7 +482,10 @@ var STATUS = {
   WARNING: ["var(--warning)", "Warning"]
 };
 var MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-var state = {cutoff: D.cutoffs[D.cutoffs.length - 1]};
+var state = {cutoff: D.cutoffs[D.cutoffs.length - 1], entity: null};
+var EFFECT_LABEL = {delay: "Customer receipts delayed", haircut: "Collection haircut on receipts",
+  one_off: "Unplanned one-off payment", fx: "FX shock on opening balances"};
+var EFFECT_ORDER = ["delay", "haircut", "one_off", "fx"];
 
 function $(id) { return document.getElementById(id); }
 function svgEl(tag, attrs, parent) {
@@ -736,9 +877,73 @@ function renderPeriod() {
   ], D.validation);
 }
 
-function renderScoped() { renderTiles(); renderHistory(); renderForecast(); renderVariance(); renderRuns(); renderAlerts(); hideTip(); }
+function entityById(id) { return D.entities.filter(function (e) { return e.id === id; })[0]; }
+
+function initEntity() {
+  var sel = $("entity"), ids = runsAt(state.cutoff).filter(function (r) { return r.status !== "SUPERSEDED"; }).map(function (r) { return r.id; });
+  var alerted = D.alerts.filter(function (a) { return a.level === "ENTITY" && ids.indexOf(a.run) >= 0; })
+    .sort(function (a, b) { return (a.severity === "CRITICAL" ? 0 : 1) - (b.severity === "CRITICAL" ? 0 : 1) || a.min - b.min; });
+  state.entity = alerted.length ? alerted[0].scope : D.entities[0].id;
+  D.entities.forEach(function (e) {
+    var o = h("option", {value: e.id}, e.id + " · " + e.name.replace(/^.*\(/, "(") + " " + e.currency, sel);
+    if (e.id === state.entity) o.selected = true;
+  });
+  sel.addEventListener("change", function () { state.entity = sel.value; renderEntity(); });
+}
+
+function renderEntity() {
+  var e = entityById(state.entity), f = D.forecasts[state.cutoff];
+  var gidx = {}; D.group.dates.forEach(function (d, i) { gidx[d] = i; });
+  var actual = (D.entity_actual[e.id] || []);
+  var series = [{name: "Actual", color: "var(--series-ink)", values: f.dates.map(function (d) { return gidx[d] == null ? null : actual[gidx[d]]; })}];
+  SC.forEach(function (s) { if (f.entity[s] && f.entity[s][e.id]) series.push({name: SC_LABEL[s], color: SC_COLOR[s], values: f.entity[s][e.id]}); });
+  $("ent-title").textContent = "Entity drill-down: " + e.id + ", " + e.name;
+  var low = function (s) { var v = f.entity[s] && f.entity[s][e.id]; return v ? Math.min.apply(null, v) : null; };
+  var alerts = D.alerts.filter(function (a) { return a.scope === e.id && runsAt(state.cutoff).some(function (r) { return r.id === a.run && r.status !== "SUPERSEDED"; }); });
+  $("ent-note").textContent = "Functional currency " + e.currency + " · minimum cash policy " + usd(e.min) +
+    " · lowest projected: base " + usd(low("BASE")) + ", stress " + usd(low("STRESS")) +
+    (alerts.length ? " · " + alerts.length + " " + alerts[0].severity.toLowerCase() + " alert at this cutoff" : " · no alert at this cutoff");
+  legend($("l-entity"), series.map(function (s) { return {name: s.name, color: s.color}; }).concat([{name: "Entity minimum", ref: true}]));
+  var ticks = [];
+  for (var i = 0; i < f.dates.length; i += 7) ticks.push(i);
+  lineChart($("c-entity"), {dates: f.dates, xticks: ticks, label: "Projected and actual cash for " + e.id,
+    series: series, refs: [{name: "Minimum", value: e.min}]});
+  table($("t-entity"), [{label: "Date", get: function (d) { return d; }}].concat(series.map(function (s) {
+    return {label: s.name, num: 1, get: function (d) { return usd(s.values[f.dates.indexOf(d)], 2); }};
+  })), f.dates);
+  var scen = ["DELAYED_RECEIPT", "STRESS"].filter(function (s) { return f.effects[s]; });
+  var cell = function (s, k) { var x = (f.effects[s][e.id] || {})[k]; return x ? x : 0; };
+  var rows = EFFECT_ORDER.map(function (k) { return {label: EFFECT_LABEL[k], key: k}; });
+  rows.push({label: "Total", key: null});
+  table($("t-effects"), [{label: "Assumption", get: function (r) { return r.label; }}].concat(scen.map(function (s) {
+    return {label: SC_LABEL[s], num: 1, get: function (r) {
+      var v = r.key ? cell(s, r.key) : EFFECT_ORDER.reduce(function (t, k) { return t + cell(s, k); }, 0);
+      return v ? usd(v, 2) : "–";
+    }};
+  })), rows);
+}
+
+function renderTop() {
+  var rows = D.forecasts[state.cutoff].top_errors, CAT = {TIMING: "Timing", AMOUNT: "Amount", UNFORECAST: "Unforecast", ANOMALY: "Bad data excluded"};
+  table($("t-top"), [
+    {label: "#", num: 1, get: function (r) { return rows.indexOf(r) + 1; }},
+    {label: "Cause", get: function (r) { return CAT[r.category] || r.category; }},
+    {label: "Source", get: function (r) {
+      var w = document.createElement("div"); h("div", {"class": "nw"}, r.source_id, w);
+      if (r.detail) h("div", {"class": "note"}, r.detail, w);
+      return w;
+    }},
+    {label: "Account", get: function (r) { return r.account; }},
+    {label: "From", nowrap: 1, get: function (r) { return r.date; }},
+    {label: "Contribution", num: 1, get: function (r) { return usd(r.usd, 2); }},
+    {label: "What it is", get: function (r) { return r.explanation; }}
+  ], rows, {empty: "No contributors at this cutoff."});
+}
+
+function renderScoped() { renderTiles(); renderHistory(); renderForecast(); renderVariance(); renderEntity(); renderTop(); renderRuns(); renderAlerts(); hideTip(); }
 
 renderMeta();
+initEntity();
 renderScoped();
 renderPeriod();
 var lastW = window.innerWidth, timer = null;
@@ -746,7 +951,7 @@ window.addEventListener("resize", function () {
   if (window.innerWidth === lastW) return;
   lastW = window.innerWidth;
   clearTimeout(timer);
-  timer = setTimeout(function () { renderHistory(); renderForecast(); renderVariance(); renderPeriod(); }, 120);
+  timer = setTimeout(function () { renderHistory(); renderForecast(); renderVariance(); renderEntity(); renderPeriod(); }, 120);
 });
 })();
 </script>

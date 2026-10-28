@@ -79,3 +79,11 @@ def test_config_hash_tracks_external_files(settings):
 def test_missing_external_file_is_a_clear_error():
     with pytest.raises(FileNotFoundError, match="prepare_external_data"):
         load_settings("starter", overrides={"external_data": {"fx_file": "data/external/does_not_exist.csv"}})
+
+
+def test_run_log_states_which_fx_source_is_used():
+    from liqfc.generators.fx_rates import fx_source_note
+    hybrid = fx_source_note(load_settings("starter", data_mode="hybrid"))
+    assert "pinned external file" in hybrid and "ignored" in hybrid
+    synthetic = fx_source_note(load_settings("starter", data_mode="synthetic"))
+    assert "synthetic random walk" in synthetic and "INR -4.0%" in synthetic

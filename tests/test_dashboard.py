@@ -74,3 +74,36 @@ def test_payload_cannot_close_the_script_tag():
 
 def test_dashboard_never_reads_ground_truth():
     assert "ground_truth" not in inspect.getsource(dashboard)
+
+
+def test_entity_drill_down_adds_up_to_group(run_dir):
+    d = _payload((run_dir / "reports" / "dashboard.html").read_text(encoding="utf-8"))
+    assert {e["id"] for e in d["entities"]} == set(d["entity_actual"])
+    for f in d["forecasts"].values():
+        for s, by_entity in f["entity"].items():
+            totals = [sum(day) for day in zip(*by_entity.values())]
+            assert totals == f["runs"][s]["cash"]
+    actual = [sum(day) for day in zip(*d["entity_actual"].values())]
+    assert actual == d["group"]["cash"]
+
+
+def test_scenario_effects_include_the_one_off_payment(run_dir, settings):
+    d = _payload((run_dir / "reports" / "dashboard.html").read_text(encoding="utf-8"))
+    one_off = settings.scenarios["STRESS"]["one_off_payment"]
+    for f in d["forecasts"].values():
+        assert f["effects"]["STRESS"][one_off["entity_id"]]["one_off"] == -int(one_off["amount_reporting_minor"])
+        assert all("one_off" not in v for v in f["effects"]["DELAYED_RECEIPT"].values())
+
+
+def test_top_errors_are_ranked_and_net_per_source(run_dir):
+    d = _payload((run_dir / "reports" / "dashboard.html").read_text(encoding="utf-8"))
+    actuals = pd.read_csv(run_dir / "dataset" / "input" / "csv" / "actual_cash_flow.csv")
+    settlements = set(actuals["ledger_entry_id"])
+    for f in d["forecasts"].values():
+        rows = f["top_errors"]
+        assert 0 < len(rows) <= dashboard.TOP_N
+        sizes = [abs(r["usd"]) for r in rows]
+        assert sizes == sorted(sizes, reverse=True) and 0 not in sizes
+        ids = [r["source_id"] for r in rows]
+        assert len(ids) == len(set(ids))
+        assert not settlements & set(ids)

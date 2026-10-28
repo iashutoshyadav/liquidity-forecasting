@@ -35,7 +35,7 @@ from liqfc.generators.balance_statements import build_bank_lines, build_statemen
 from liqfc.generators.context import GenContext
 from liqfc.generators.entities import generate_entities
 from liqfc.generators.forecast_items import assign_cf_ids, build_revisions, finalize_cf
-from liqfc.generators.fx_rates import generate_rates
+from liqfc.generators.fx_rates import fx_source_note, generate_rates
 from liqfc.generators.ledger import build_ledger
 from liqfc.generators.payables import build_payable_events, generate_payables, recurring_item_count
 from liqfc.generators.receivables import build_receivable_events, generate_receivables
@@ -237,6 +237,7 @@ def run_pipeline(settings, out_dir: Path, stage: str = "all", command: str | Non
     info: dict = {"scale": settings.scale_name, "seed": settings.seed}
 
     log(f"[generate] building clean baseline ({settings.scale_name})")
+    log(f"[generate] {fx_source_note(settings)}")
     baseline, _ = generate_baseline(settings)
     cal, fx = make_fx(baseline, settings)
     names = list(INPUT_TABLES)

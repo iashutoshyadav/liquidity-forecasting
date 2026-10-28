@@ -5,9 +5,10 @@ flows across 30 legal entities, 150 bank accounts and 5 currencies. It then fore
 liquidity under three scenarios, catches bad data before it reaches a forecast, and explains every
 gap between forecast and reality, down to the source record.
 
-Python 3.11 · pandas · NumPy · SQLite · pytest · fully deterministic (seed `20261022`) · 125 tests · HTML dashboard
+Python 3.11 · pandas · NumPy · SQLite · pytest · fully deterministic (seed `20261022`) · 137 tests · HTML dashboard
 
 **[Open the live dashboard](https://iashutoshyadav.github.io/liquidity-forecasting/dashboard.html)**: full-scale run, opens in the browser, nothing to install.
+Why it's built this way: **[design decisions and trade-offs](docs/decisions.md)**.
 
 ---
 
@@ -19,9 +20,9 @@ Python 3.11 · pandas · NumPy · SQLite · pytest · fully deterministic (seed 
 | Clean-data validation | **233 / 233** checks pass (keys, joins, formats, lifecycles, revisions, reconciliation, SQL load …) |
 | Bank reconciliation | Independent bank feed matched line by line: 97,599 matched, 2,364 timing differences, 304 bank-only charges, 37 in transit; **0 unexplained breaks** in 27,150 account-days of clean data |
 | Anomaly detection | **85 / 85** planted problems found · **0** false alarms · **0** missed |
-| Forecast accuracy (BASE scenario) | **7.1%** average error (MAPE) per account and **3.4%** for the group; 5.2% on days 1–7 rising to 11.2% on days 22–30 (all scenarios) |
+| Forecast accuracy (BASE scenario) | **6.1%** average error (MAPE) per account and **2.4%** for the group; 5.2% on days 1–7 rising to 8.4% on days 22–30 (all scenarios) |
 | Variance explained | Every forecast-vs-actual gap split into causes; rounding residual ≤ 2 cents |
-| Stress testing | STRESS lowers minimum group cash by **28–42M USD**; one entity's projected cash goes negative (CRITICAL alert) |
+| Stress testing | STRESS lowers minimum group cash by **43–51M USD**. Alerts against a 1.5-month minimum: BASE 2 warnings, DELAYED_RECEIPT 2, STRESS 6 (4 CRITICAL: one entity goes negative); days below the minimum 9 → 18 → 147 |
 | Reproducibility | Two independent runs → **100 / 100** output files byte-identical (full), 102 / 102 (starter) |
 | Dashboard | One offline HTML page per run (`reports/dashboard.html`): cash, forecasts, causes of error, runs, alerts, reconciliation, data quality |
 
@@ -101,7 +102,7 @@ pip install -e . --no-deps            # makes `python -m liqfc.cli` available
 ```bash
 python -m liqfc.cli all --scale starter     # small dataset, ~20-60 s
 python -m liqfc.cli all --scale full        # required volumes, ~3-7 min, ~400 MB of output
-pytest                                      # 125 tests, ~2-3 min
+pytest                                      # 137 tests, ~2-3 min
 ```
 
 **Look at the results:**
@@ -266,6 +267,7 @@ A forecast "as of" a cutoff date may only use information recorded **before** th
 - **Forecast items** must have been known before the cutoff, and not yet cancelled or written off. Partially paid items keep only the unpaid remainder.
 - **Item versions:** each item is read at its **latest revision known strictly before the cutoff** (see 7.3.1), and the run line records which revision it used.
 - **Overdue items** are re-dated by documented rules: receivables to cutoff + 7 days, payables to the cutoff.
+- **Recurring flows with no forecast item yet** (FC-12 run-rate): payroll that isn't booked yet is projected at the last payroll actual on the next pay day, and small sundry flows and bank fees at each account's net per business day over the previous 8 weeks. Only data recorded before the cutoff is used, and every scenario gets the same lines.
 - **Guards** exclude lines that would leak future information, mix currencies, or double count a source. Each exclusion is logged with a reason.
 - **Projection:** daily closing per account for 30 days, converted at the last rate published before the cutoff, then consolidated. Run metrics include minimum cash and its date, days below threshold, negative-balance days, and expected inflows and outflows.
 
@@ -315,7 +317,7 @@ For each run, account and day: `variance = actual closing − forecast closing`,
 |---|---|---|
 | **TIMING** | The flow happened, but on a different day | Invoice forecast for the 10th, paid on the 15th |
 | **AMOUNT** | The flow happened, with a different amount | Payroll forecast at last month's figure; actual 1.5% higher |
-| **UNFORECAST** | Cash moved with no forecast item | Bank fees, interest, small sundry payments, invoices raised after the cutoff |
+| **UNFORECAST** | Cash moved with no forecast item, net of the run-rate estimate for it | Interest, invoices raised after the cutoff, and sundry or payroll differences from the run-rate |
 | **ANOMALY** | The flow belongs to an item excluded as bad data | Settlement of a forecast item that leaked future information |
 | **FX_MOVEMENT** | The USD value changed because the rate moved | EUR balance worth more at today's rate than at the cutoff rate |
 | **RESIDUAL** | Rounding only | At most 2 cents in practice |
@@ -392,31 +394,59 @@ On the clean data, the detectors raise nothing (0 false alarms).
 
 | Slice | MAE (USD) | MAPE | Bias (USD) |
 |---|---|---|---|
-| BASE | 112,734 | 7.1% | +82,851 |
-| DELAYED_RECEIPT | 95,289 | 6.7% | +14,918 |
-| STRESS | 239,535 | 11.2% | −194,971 (deliberately pessimistic) |
+| BASE | 86,782 | 6.1% | +55,619 |
+| DELAYED_RECEIPT | 73,117 | 5.7% | −12,314 |
+| STRESS | 235,374 | 10.7% | −221,592 (deliberately pessimistic) |
 | Days 1–7 | | 5.2% | |
-| Days 22–30 | | 11.2% | |
-| Group level, BASE | | 3.4% | |
+| Days 22–30 | | 8.4% | |
+| Group level, BASE | | 2.4% | |
 
 Cash pooling cut the average error in USD by about 46% when it was introduced, from MAE 277,640 to 149,939 across all
-scenarios (149,186 now). Percentage error rose, from 7.6% to 8.4% overall, because pooled accounts now hold much
+scenarios. Percentage error rose, from 7.6% to 8.4% overall, because pooled accounts now hold much
 smaller balances, so the same error is a larger share, and because weekly sweeps add account-level
 movement.
+
+**Run-rate estimate (FC-12), measured like for like** (same data, estimate switched off vs on):
+
+| Metric | Without | With |
+|---|---|---|
+| BASE error per account (MAPE) | 7.1% | **6.1%** |
+| BASE average miss per account (MAE) | 112,734 USD | **86,782 USD** (−23%) |
+| All scenarios, average miss per account | 149,186 USD | **131,758 USD** (−12%) |
+| Group error, BASE / DELAYED_RECEIPT | 3.4% / 2.0% | **2.4% / 1.0%** |
+| Days 22–30 error (all scenarios) | 11.2% | **8.4%** |
+| UNFORECAST on day 30, BASE, summed over the 4 runs | −84.4M USD (55% of the gap) | **−15.3M USD (33%)** |
+| STRESS group error | 7.2% | 8.3% |
+
+Payroll that isn't booked yet at a 1st-of-month cutoff was the largest unforecast flow, more than sundry. STRESS group error rose because STRESS is deliberately pessimistic and the estimate adds the payroll outflow to it.
 
 **Data quality:** key uniqueness, foreign-key pass rate and FX coverage are **100%** on clean data, and no
 account-day is a break (16,229 reconciled, 10,921 explained by reconciling items). On the injected data they drop by
 exactly the planted damage: 25 statement breaks and 288 conversions on a fallback rate.
 
 **Bank reconciliation items** (full scale): 97,599 MATCHED, 2,364 TIMING_DIFFERENCE, 304 BANK_ONLY, 37 LEDGER_ONLY
-(in transit at 30 June), 0 UNMATCHED. Every ledger entry and bank line appears in exactly one item. In the injected data, 9 of 12 forecast runs are
+(in transit at 30 June), 0 UNMATCHED. Every ledger entry and bank line appears in exactly one item.
+
+**Run approval:** in the injected data, 9 of 12 forecast runs are
 held for review: April for a missing pre-cutoff FX rate, May and June for material breaks in the
 week before the cutoff. The 3 March runs are approved.
 
-**Liquidity:** with cash pooling, minimum projected group cash is 8.4–11.2× the group policy minimum
-(326–437M USD against a 38.9M threshold), down from about 14× before pooling. At every cutoff,
-STRESS lowers minimum group cash by 28–42M USD against BASE. In all four STRESS runs, ENT-000001's
-projected cash goes negative (CRITICAL alert).
+**Liquidity:** each entity's minimum cash is 1.5 months of revenue (group 116.8M USD). Minimum projected
+group cash is 2.7–3.7× that minimum. At every cutoff, STRESS lowers minimum group cash by 43–51M USD
+against BASE. Entity alerts (current runs, clean data):
+
+| Scenario | Alerts | Days below minimum | What happens |
+|---|---|---|---|
+| BASE | 2 WARNING | 9 | ENT-000003 dips just below its minimum in the March and April runs |
+| DELAYED_RECEIPT | 2 WARNING | 18 | The same entity, for longer and deeper |
+| STRESS | 4 CRITICAL, 2 WARNING | 147 | ENT-000001 goes negative after the 8M USD one-off payment in every run; ENT-000003 stays below for 26–30 days |
+
+The minimum was 0.5 months until this version. At that level entities' lowest projected cash was a median 8× the
+minimum, so only the hypothetical STRESS payment could ever trigger an alert, and the alert logic was never
+exercised by ordinary scenarios. Delayed receipts mostly move cash later rather than reduce it (they lower an
+entity's lowest point by less than 0.1 months of revenue on average), so they show up as more days below the
+minimum rather than as more alerts. A harsher delay (50% of receipts, 30 days) was measured and doesn't change
+the alert count at 1.5 months, so the documented scenario was kept.
 
 **Transaction mix:** sundry receipts and payments are 77% of ledger rows, which is realistic for
 small-ticket activity and fixed by the 100,000-row target, but only 19% of money moved. Their net
@@ -450,7 +480,7 @@ output/<scale>/
 
 `reports/dashboard.html` is written by `all` (or rebuilt from existing outputs with
 `python -m liqfc.cli dashboard --scale full`). It's one file with no external scripts or network calls,
-so it opens offline and can be attached to an email. A cutoff selector (1 March to 1 June) drives the top half:
+so it opens offline and can be attached to an email. A cutoff selector (1 March to 1 June) and an entity selector drive the top half:
 
 | Section | Shows |
 |---|---|
@@ -458,6 +488,8 @@ so it opens offline and can be attached to an email. A cutoff selector (1 March 
 | Group cash, actual | Daily group cash for the whole period, the policy minimum and the selected cutoff |
 | Forecast vs actual | The three scenario projections against what actually happened |
 | What explains the gap | Day-30 variance split into timing, amount, unforecast, bad data excluded and FX movement, per scenario |
+| Entity drill-down | One entity's projected cash per scenario vs actual and its minimum, plus what each scenario assumption changes for it on day 30 (e.g. ENT-000001: the 8M USD one-off payment is why STRESS goes negative) |
+| Largest contributors to the gap | Top 10 sources of the base forecast's day-30 gap, netted per source (a settlement counts against its forecast item), with cause, record and explanation |
 | Runs and alerts | Each run's status with its hold reasons (RUN-01), and entity minimum-cash breaches |
 | Whole period | Error by horizon and scenario, reconciliation items and breaks, planted problems found, exception log, validation |
 
@@ -551,10 +583,12 @@ liquidity-forecasting/
 ├── scripts/           reproduce.py · prepare_external_data.py
 ├── docs/              architecture · data_dictionary · erd · business_rules · scenarios ·
 │                      anomaly_catalog · provenance
-└── tests/             19 test modules, 125 tests
+└── tests/             20 test modules, 137 tests
 ```
 
 ## 14. Design decisions
+
+The full reasoning, rejected alternatives and costs are in [docs/decisions.md](docs/decisions.md).
 
 | Decision | Why |
 |---|---|
@@ -581,9 +615,10 @@ liquidity-forecasting/
 - **JSON size limit:** derived tables over 100,000 rows are exported as CSV only, to limit size.
 
 **Limitations:**
-- About 77% of ledger rows (19% of value) are small sundry payments. They have no forecast items, so UNFORECAST is still the largest variance category at the horizon end. A run-rate model for small flows would reduce it; it isn't implemented.
-- The group still holds 8–11× its policy minimum (payroll, reserve and foreign-currency accounts aren't pooled), so breaches appear at entity level under STRESS, not at group level.
-- Account-level percentage error rose after cash pooling (smaller balances, weekly sweeps), although the error in USD fell.
+- The run-rate estimate (FC-12) is a plain average: no seasonality, trend or weekday profile. UNFORECAST fell from 55% to 33% of the BASE day-30 gap but is still marginally the largest cause (timing is 31%). Interest and invoices raised after the cutoff are still not estimated.
+- STRESS group error rose from 7.2% to 8.3% with the run-rate, because STRESS is deliberately pessimistic and now also carries the payroll outflow.
+- Group-level cash stays 2.7–3.7× above the group minimum in every scenario, so breaches appear at entity level, not group level. DELAYED_RECEIPT differs from BASE mainly in days below the minimum (18 vs 9), not in the number of alerts.
+- Account-level percentage error rose after cash pooling (smaller balances, weekly sweeps), although the error in USD fell. The run-rate estimate has since brought it back to about the pre-pooling level: overall 7.5% (7.6% before pooling), BASE 6.1% (6.1% before pooling).
 - Detectors are rules written for the five specified anomaly types. Perfect scores show they work on those types, not that they generalise to unseen kinds of bad data.
 - Byte-identical output was verified on Python 3.11 with pandas 2.3/NumPy 1.26 and pandas 3.1/NumPy 2.4 (versions are recorded in each manifest). Library versions outside the tested range in `requirements.txt` could change random draws.
 - The bank model and the ledger start from the same economic events by design, so the bank side differs only through the documented bank rules (clearing delays, charges). It doesn't model bank errors, reversals or many-to-one netting, and matching requires an exact amount.
@@ -617,6 +652,7 @@ liquidity-forecasting/
 
 | Document | Covers |
 |---|---|
+| [docs/decisions.md](docs/decisions.md) | Design decisions, rejected alternatives, trade-offs, what's next |
 | [docs/architecture.md](docs/architecture.md) | Pipeline, module responsibilities, design decisions, output layout |
 | [docs/data_dictionary.md](docs/data_dictionary.md) | Every table and field (generated from the schema) |
 | [docs/erd.md](docs/erd.md) | Relationships, cardinality, effective dates, lifecycle states |

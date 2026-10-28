@@ -453,7 +453,7 @@ Primary key: `line_id`
 | `cf_id` | str | N | |  | | cash_flow_forecast.cf_id | |  |
 | `revision_id` | str | N | |  | | cash_flow_forecast_revision.revision_id | | Item version used (latest known before cutoff) |
 | `account_id` | str | Y | |  | | bank_account.account_id | |  |
-| `source_type` | str | Y | RECEIVABLE, PAYABLE, SCENARIO, SWEEP | |  | |  | |
+| `source_type` | str | Y | RECEIVABLE, PAYABLE, SCENARIO, SWEEP, RUN_RATE | |  | |  | |
 | `source_id` | str | Y | |  | |  | |  |
 | `currency` | str | Y | USD, EUR, GBP, INR, JPY | |  | |  | |
 | `base_date` | date | Y | |  | |  | |  |
@@ -551,7 +551,7 @@ Primary key: `attribution_id`
 | `category` | str | Y | TIMING, AMOUNT, UNFORECAST, ANOMALY | |  | |  | |
 | `effective_date` | date | Y | |  | |  | | Component applies to all comparison dates >= this |
 | `amount_minor` | int | Y | | minor units of `currency` | |  | |  |
-| `source_type` | str | Y | CASH_FLOW_FORECAST, LEDGER_ENTRY, LEDGER_GROUP, SCENARIO_ASSUMPTION, CASH_POOL_SWEEP | |  | |  | |
+| `source_type` | str | Y | CASH_FLOW_FORECAST, LEDGER_ENTRY, LEDGER_GROUP, SCENARIO_ASSUMPTION, CASH_POOL_SWEEP, RUN_RATE_ESTIMATE | |  | |  | |
 | `source_id` | str | Y | |  | |  | |  |
 | `source_count` | int | Y | |  | |  | |  |
 | `rule_id` | str | Y | |  | |  | |  |
